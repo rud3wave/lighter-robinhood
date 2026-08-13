@@ -30,6 +30,12 @@ Keep `DRY_RUN = True` in `settings.py` for the first run. Mode `4` works without
 python main.py
 ```
 
+Or, if you prefer the same command style as the Phoenix bot:
+
+```powershell
+npm start
+```
+
 Modes:
 
 - `1` open one LIT delta-neutral cycle from configured accounts
@@ -39,4 +45,3 @@ Modes:
 - `5` cancel configured LIT orders
 
 To send live orders, set `DRY_RUN = False` in `settings.py`.
-

@@ -1,0 +1,11 @@
+{
+  "name": "lighter-robinhood-lit",
+  "version": "1.0.0",
+  "description": "Robinhood Chain Lighter LIT trading bot scaffold",
+  "private": false,
+  "type": "module",
+  "scripts": {
+    "start": ".\\.venv\\Scripts\\python.exe main.py",
+    "start:system-python": "python main.py"
+  }
+}
