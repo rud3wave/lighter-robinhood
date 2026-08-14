@@ -8,7 +8,7 @@ import urllib.request
 from settings import RETRY
 
 from .global_config import load_global_config
-from .pretty import ok, warn
+from .pretty import warn
 
 
 def _send(message: str) -> None:
@@ -42,7 +42,6 @@ async def send_tg(message: str) -> bool:
     for attempt in range(1, max(1, RETRY) + 1):
         try:
             await asyncio.to_thread(_send, message)
-            ok("Telegram", "message delivered")
             return True
         except Exception as exc:
             last_error = str(exc).replace(config.token, "<bot-token>")

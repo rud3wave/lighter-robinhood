@@ -15,14 +15,16 @@ from Crypto.Protocol.KDF import PBKDF2
 from Crypto.Hash import SHA256
 from eth_account import Account
 
-from settings import (
+from .constants import (
     API_BASE_URL,
     DEFAULT_API_KEY_INDEX,
+)
+from settings import (
     SHUFFLE_WALLETS,
     STRICT_PROXY_ISOLATION,
 )
 
-from .pretty import error, exception_summary, info, ok, section, warn, wallet_prefix
+from .pretty import error, exception_summary, plain, section, warn, wallet_prefix
 from .vault import DEFAULT_PASSWORD, LINE_PREFIX, open_line, open_text, protect_lines_atomic, seal_text, vault_password
 
 
@@ -92,7 +94,6 @@ def read_private_keys() -> list[str]:
         raise RuntimeError(f"No private keys found in {PRIVATE_KEYS_PATH}")
     if has_plaintext:
         protect_lines_atomic(PRIVATE_KEYS_PATH, keys, "input:privatekeys")
-        ok("Private-key input protected", "privatekeys.txt encrypted in place")
     return keys
 
 
@@ -101,7 +102,6 @@ def read_proxies() -> list[str]:
     proxies = [normalize_proxy(proxy) for proxy in raw_proxies]
     if has_plaintext and proxies:
         protect_lines_atomic(PROXIES_PATH, proxies, "input:proxies")
-        ok("Proxy input protected", "proxies.txt encrypted in place")
     return proxies
 
 
@@ -141,26 +141,26 @@ def check_proxies_health(proxies: list[str]) -> list[str]:
             raise RuntimeError(
                 "STRICT_PROXY_ISOLATION requires one proxy for every wallet"
             )
-        warn("No proxies configured", "all wallets will use current IP")
+        warn("Прокси не указаны", "кошельки используют текущий IP")
         return []
-    section("Proxy check", f"{len(unique)} proxy")
+    section("Прокси", str(len(unique)))
     with ThreadPoolExecutor(max_workers=len(unique)) as executor:
         statuses = list(executor.map(check_proxy, unique))
 
     alive: list[str] = []
-    for index, (proxy, is_alive) in enumerate(zip(unique, statuses)):
-        label = f"proxy[{index}] {mask_proxy(proxy)}"
+    for proxy, is_alive in zip(unique, statuses):
+        label = mask_proxy(proxy)
         if is_alive:
             alive.append(proxy)
-            ok(label, "reachable through Lighter endpoint")
+            plain(label, "подключен")
         else:
-            error(label, "dead or unreachable")
+            error(label, "не отвечает")
     if STRICT_PROXY_ISOLATION and len(alive) != len(unique):
         raise RuntimeError(
             "Strict proxy isolation stopped the run because one or more proxies failed"
         )
     if not alive:
-        warn("All proxies failed", "running without proxy isolation")
+        warn("Прокси недоступны", "кошельки используют текущий IP")
     return alive
 
 
@@ -234,7 +234,6 @@ def save_wallets(wallets: list[WalletAccount]) -> None:
     finally:
         if temporary.exists():
             temporary.unlink()
-    ok("Encrypted wallet DB saved", f"vault v2 | {len(records)} isolated record(s)")
 
 
 def load_wallets_db() -> list[WalletAccount] | None:
@@ -300,17 +299,13 @@ def init_wallets() -> list[WalletAccount]:
                 wallet.api_private_key = old.api_private_key
                 wallet.proxy_url = old.proxy_url or wallet.proxy_url
     save_wallets(current)
-    section("Wallets loaded", f"{len(current)} wallet(s) | input order")
+    section("Кошельки", str(len(current)))
     for wallet in current:
-        parts = [f"proxy: {mask_proxy(wallet.proxy_url)}" if wallet.proxy_url else "no proxy"]
-        parts.append(f"account: {wallet.account_index}" if wallet.account_index is not None else "no account")
-        parts.append("api-key OK" if wallet.api_private_key else "no api-key")
         label = wallet_prefix(wallet.index, mask_secret(wallet.address))
-        info(label, " | ".join(parts))
+        proxy = f"proxy: {mask_proxy(wallet.proxy_url)}" if wallet.proxy_url else "proxy: none"
+        plain(label, proxy)
 
     execution_order = list(current)
     if SHUFFLE_WALLETS:
         random.shuffle(execution_order)
-        order = " -> ".join(mask_secret(wallet.address) for wallet in execution_order)
-        info("Execution order shuffled", order)
     return execution_order

@@ -62,7 +62,7 @@ def line(char: str = "=", width: int = 68) -> str:
 
 def banner() -> None:
     title = "LIGHTER ROBINHOOD ETH"
-    subtitle = "Delta-neutral trading | Referral + USDG deposit"
+    subtitle = "Delta-neutral trading"
     print()
     print(paint("+" + "=" * 66 + "+", C.CYAN))
     print(paint("|", C.CYAN) + paint(f"{title:^66}", C.BOLD + C.WHITE) + paint("|", C.CYAN))
@@ -94,6 +94,13 @@ def status(kind: str, message: str, detail: str = "") -> None:
     color = styles.get(kind, C.WHITE)
     suffix = paint(f" | {detail}", C.GRAY) if detail else ""
     print(f"{ts()} {paint(kind.rjust(4), color + C.BOLD)} {message}{suffix}")
+
+
+def plain(message: str, detail: str = "") -> None:
+    message = redact(message)
+    detail = redact(detail)
+    suffix = paint(f" | {detail}", C.GRAY) if detail else ""
+    print(f"{ts()} {message}{suffix}")
 
 
 def ok(message: str, detail: str = "") -> None:

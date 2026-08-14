@@ -6,17 +6,17 @@ from typing import Any
 import lighter
 from web3 import Web3
 
-from settings import (
+from .constants import (
     API_BASE_URL,
-    DEPOSIT_ALL,
     DEPOSIT_TOKEN_SYMBOL,
     DEPOSIT_WAIT_FOR_RECEIPT,
     ROBINHOOD_CHAIN_ID,
     ROBINHOOD_RPC_URL,
 )
+from settings import DEPOSIT_ALL
 
 from .api import LighterPublicApi
-from .pretty import info, ok, skip, wallet_prefix
+from .pretty import ok, plain, skip, wallet_prefix
 from .utils import pick_range
 from .wallets import WalletAccount, mask_secret
 
@@ -160,29 +160,28 @@ async def deposit_token(wallet: WalletAccount, amount: Decimal | None = None) ->
     plan = await asyncio.to_thread(_prepare_deposit, wallet, amount)
     label = wallet_prefix(wallet.index, mask_secret(wallet.address))
 
-    info(
-        label,
-        f"{DEPOSIT_TOKEN_SYMBOL} balance={plan.balance:.6f} | deposit={plan.amount:.6f}"
-    )
     if plan.amount_i <= 0:
-        skip(label, f"deposit skipped: zero {DEPOSIT_TOKEN_SYMBOL} balance")
+        skip(label, f"баланс {DEPOSIT_TOKEN_SYMBOL}=0")
         return None
     if plan.amount < plan.min_transfer:
-        skip(label, f"deposit skipped: minimum is {plan.min_transfer} {DEPOSIT_TOKEN_SYMBOL}")
+        skip(label, f"депозит меньше минимума {plan.min_transfer} {DEPOSIT_TOKEN_SYMBOL}")
         return None
     if plan.balance_i < plan.amount_i:
-        skip(label, f"deposit skipped: not enough {DEPOSIT_TOKEN_SYMBOL}")
+        skip(label, f"недостаточно {DEPOSIT_TOKEN_SYMBOL}")
         return None
+    plain(
+        label,
+        f"баланс={plan.balance:.6f} {DEPOSIT_TOKEN_SYMBOL} | "
+        f"депозит={plan.amount:.6f} {DEPOSIT_TOKEN_SYMBOL}",
+    )
     intent_address = Web3.to_checksum_address(await _intent_address(wallet))
-    tx_hash, block_number = await asyncio.to_thread(
+    tx_hash, _ = await asyncio.to_thread(
         _send_deposit,
         wallet,
         plan,
         intent_address,
     )
-    ok(label, f"deposit tx sent: {mask_secret(tx_hash)}")
-    if block_number is not None:
-        ok(label, f"deposit confirmed: block {block_number}")
+    ok(label, f"задепано {plan.amount:.6f} {DEPOSIT_TOKEN_SYMBOL} | tx {mask_secret(tx_hash)}")
     return tx_hash
 
 

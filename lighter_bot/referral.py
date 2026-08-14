@@ -1,8 +1,7 @@
 import lighter
 
-from settings import API_BASE_URL, CHAIN_ID, REFERRAL_CODE, REFERRAL_X
-
-from .pretty import ok, skip, warn, wallet_prefix
+from .constants import API_BASE_URL, CHAIN_ID, REFERRAL_CODE, REFERRAL_X
+from .pretty import skip, warn, wallet_prefix
 from .service import _apply_proxy
 from .wallets import WalletAccount, mask_secret
 
@@ -12,13 +11,11 @@ async def use_referral(wallet: WalletAccount) -> bool:
     if not REFERRAL_CODE:
         return False
     if wallet.account_index is None:
-        skip(label, "referral skipped: no Lighter account for wallet")
+        skip(label, "реферал: аккаунт Lighter не найден")
         return False
     if not wallet.api_private_key:
-        skip(label, "referral skipped: no API key")
+        skip(label, "реферал: торговый доступ не настроен")
         return False
-
-    ok(label, f"referral submit: {REFERRAL_CODE}")
 
     signer = lighter.SignerClient(
         url=API_BASE_URL,
@@ -43,9 +40,8 @@ async def use_referral(wallet: WalletAccount) -> bool:
             auth=auth,
         )
         if resp.code != 200:
-            warn(label, f"referral response: code={resp.code} message={resp.message}")
+            warn(label, f"реферал не применён: {resp.message}")
             return False
-        ok(label, f"referral applied: {REFERRAL_CODE}")
         return True
     finally:
         await signer.close()

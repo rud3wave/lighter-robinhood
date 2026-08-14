@@ -3,26 +3,15 @@ import random
 from decimal import Decimal
 
 from settings import (
-    API_BASE_URL,
     DEPOSIT_ALL,
     DEPOSIT_AMOUNT,
-    DEPOSIT_TOKEN_SYMBOL,
-    DEFAULT_API_KEY_INDEX,
     DELAY_BETWEEN_TRADES,
-    DELAY_BETWEEN_WALLETS,
     EXECUTION_MODE,
     GROUP_CONFIGS,
     HOLD_MINUTES,
     MAX_SPREAD,
-    POST_DEPOSIT_ACCOUNT_POLL_ATTEMPTS,
-    POST_DEPOSIT_ACCOUNT_POLL_SECONDS,
     POSITION_PERCENT,
-    POLL_INTERVAL_SEC,
     RETRY,
-    SPREAD_POLL_INTERVAL_SECONDS,
-    SPREAD_LOG_INTERVAL_SECONDS,
-    SPREAD_WAIT_TIMEOUT_SECONDS,
-    SYMBOL,
     TOKEN_LEVERAGE,
     TOKENS_TO_TRADE,
     TRADES_COUNT,
@@ -30,8 +19,19 @@ from settings import (
 
 from .allocation import Allocation, calculate_allocation
 from .api import BookSnapshot, LighterPublicApi
+from .constants import (
+    API_BASE_URL,
+    DEFAULT_API_KEY_INDEX,
+    DEPOSIT_TOKEN_SYMBOL,
+    POST_DEPOSIT_ACCOUNT_POLL_ATTEMPTS,
+    POST_DEPOSIT_ACCOUNT_POLL_SECONDS,
+    RUNTIME_POLL_INTERVAL_SECONDS,
+    SPREAD_LOG_INTERVAL_SECONDS,
+    SPREAD_POLL_INTERVAL_SECONDS,
+    SPREAD_WAIT_TIMEOUT_SECONDS,
+)
 from .deposit import deposit_token, pick_deposit_amount
-from .pretty import error, exception_summary, info, ok, section, skip, step, warn, wallet_prefix
+from .pretty import error, exception_summary, info, ok, plain, section, skip, step, warn, wallet_prefix
 from .paired_execution import (
     PairedTarget,
     allocate_targets,
@@ -54,6 +54,20 @@ def _wallet_log_label(wallet: WalletAccount) -> str:
 
 def _tg_service_label(service: LighterService) -> str:
     return mask_secret(service.wallet.address)
+
+
+def _duration_text(minutes: float) -> str:
+    total = max(0, int(round(minutes)))
+    days, remainder = divmod(total, 24 * 60)
+    hours, mins = divmod(remainder, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if mins or not parts:
+        parts.append(f"{mins}m")
+    return " ".join(parts)
 
 
 class Controller:
@@ -106,8 +120,7 @@ class Controller:
         wallets = self._load_wallets()
         if not wallets:
             raise RuntimeError("No wallets loaded from input_data/privatekeys.txt")
-        section("API-key setup", f"parallel={len(wallets)} | index={DEFAULT_API_KEY_INDEX}")
-        warn("Existing key at this index will be replaced")
+        section("Подготовка аккаунтов", f"{len(wallets)} кошельков")
 
         async def setup_one(wallet: WalletAccount) -> bool:
             service = LighterService(wallet, API_BASE_URL, dry_run=True)
@@ -122,7 +135,7 @@ class Controller:
         changed = any(await asyncio.gather(*(setup_one(wallet) for wallet in wallets)))
         if changed:
             save_wallets(wallets)
-            await send_tg(f"Lighter {SYMBOL}: API-key setup finished for {len(wallets)} wallet(s)")
+            await send_tg(f"✅ АККАУНТЫ ГОТОВЫ | {len(wallets)} кошельков")
 
     async def resolve_accounts(self, wallets: list[WalletAccount] | None = None) -> list[WalletAccount]:
         wallets = wallets or self._load_wallets()
@@ -130,7 +143,7 @@ class Controller:
             try:
                 changed = await self._resolve_wallet_account(wallet)
                 if wallet.account_index is None:
-                    skip(_wallet_log_label(wallet), "no Lighter account")
+                    skip(_wallet_log_label(wallet), "аккаунт Lighter не найден")
                 return changed
             except Exception as exc:
                 error(_wallet_log_label(wallet), exception_summary(exc))
@@ -147,8 +160,8 @@ class Controller:
             raise RuntimeError("No wallets loaded from input_data/privatekeys.txt")
 
         section(
-            f"Referral + {DEPOSIT_TOKEN_SYMBOL} deposit",
-            f"parallel={len(wallets)} | amount={'ALL' if DEPOSIT_ALL else DEPOSIT_AMOUNT}",
+            f"Реферал + депозит {DEPOSIT_TOKEN_SYMBOL}",
+            f"{len(wallets)} кошельков | {'весь баланс' if DEPOSIT_ALL else DEPOSIT_AMOUNT}",
         )
 
         async def deposit_one(wallet: WalletAccount) -> tuple[str | None, bool, bool]:
@@ -161,15 +174,14 @@ class Controller:
                             await self._ensure_api_key(wallet)
                             or wallet_changed
                         )
-                        await use_referral(wallet)
                     except Exception as exc:
-                        warn(_wallet_log_label(wallet), f"referral setup failed; deposit continues: {exception_summary(exc)}")
+                        warn(_wallet_log_label(wallet), f"аккаунт не подготовлен: {exception_summary(exc)}")
 
                 amount = None if DEPOSIT_ALL else pick_deposit_amount(DEPOSIT_AMOUNT)
                 tx_hash = await deposit_token(wallet, amount)
                 return tx_hash, bool(tx_hash and not had_account), wallet_changed
             except Exception as exc:
-                error(_wallet_log_label(wallet), f"deposit error: {exception_summary(exc)}")
+                error(_wallet_log_label(wallet), f"ошибка депозита: {exception_summary(exc)}")
                 return None, False, False
 
         deposit_results = await asyncio.gather(*(deposit_one(wallet) for wallet in wallets))
@@ -190,7 +202,7 @@ class Controller:
                     return changed_now or resolved
                 return False
             except Exception as exc:
-                warn(_wallet_log_label(wallet), f"post-deposit setup pending: {exception_summary(exc)}")
+                warn(_wallet_log_label(wallet), f"аккаунт ещё создаётся: {exception_summary(exc)}")
                 return False
 
         if pending_registration:
@@ -200,18 +212,18 @@ class Controller:
             changed = any(registration_results) or changed
         if changed:
             save_wallets(wallets)
-        ok("Deposit batch finished", f"confirmed txs={len(tx_hashes)}/{len(wallets)}")
-        lines = [f"💰 USDG DEPOSIT | Lighter | {len(wallets)} wallet(s)", ""]
+        ok("Депозиты", f"подтверждено {len(tx_hashes)}/{len(wallets)}")
+        lines = [f"💰 USDG DEPOSIT | {len(wallets)} кошельков", ""]
         for wallet, (tx_hash, pending, _) in zip(wallets, deposit_results):
             if tx_hash:
-                state = "account pending" if pending else "confirmed"
+                state = "аккаунт создаётся" if pending else "готово"
                 lines.append(
                     f"✅ {mask_secret(wallet.address)} | "
                     f"{state} | tx {mask_secret(tx_hash)}"
                 )
             else:
-                lines.append(f"⚠️ {mask_secret(wallet.address)} | no deposit")
-        lines.extend(["", f"Confirmed transactions: {len(tx_hashes)}/{len(wallets)}"])
+                lines.append(f"⚠️ {mask_secret(wallet.address)} | без депозита")
+        lines.extend(["", f"Подтверждено: {len(tx_hashes)}/{len(wallets)}"])
         await send_tg("\n".join(lines))
 
     async def _services(self, require_trading: bool = False) -> list[LighterService]:
@@ -237,7 +249,7 @@ class Controller:
             try:
                 return await self._resolve_wallet_account(wallet)
             except Exception as exc:
-                error(_wallet_log_label(wallet), f"account lookup failed: {exception_summary(exc)}")
+                error(_wallet_log_label(wallet), f"аккаунт не найден: {exception_summary(exc)}")
                 return False
 
         resolved = await asyncio.gather(*(resolve_one(wallet) for wallet in wallets))
@@ -248,7 +260,7 @@ class Controller:
                 try:
                     return await self._ensure_api_key(wallet)
                 except Exception as exc:
-                    error(_wallet_log_label(wallet), f"API-key setup failed: {exception_summary(exc)}")
+                    error(_wallet_log_label(wallet), f"торговый доступ не настроен: {exception_summary(exc)}")
                     return False
 
             keys = await asyncio.gather(*(ensure_one(wallet) for wallet in wallets))
@@ -267,7 +279,7 @@ class Controller:
             if not matches:
                 return False
             wallet.account_index = min(int(item.get("index") or item.get("account_index")) for item in matches)
-            ok(_wallet_log_label(wallet), "account resolved")
+            ok(_wallet_log_label(wallet), "аккаунт готов")
             return True
         finally:
             await service.close()
@@ -276,7 +288,7 @@ class Controller:
         if wallet.can_trade:
             return False
         if wallet.account_index is None:
-            skip(_wallet_log_label(wallet), "no Lighter account, skip API-key setup")
+            skip(_wallet_log_label(wallet), "аккаунт Lighter не найден")
             return False
         service = LighterService(wallet, API_BASE_URL, dry_run=True)
         try:
@@ -288,22 +300,19 @@ class Controller:
     async def _wait_for_account(self, wallet: WalletAccount) -> bool:
         if POST_DEPOSIT_ACCOUNT_POLL_ATTEMPTS <= 0:
             return False
-        step(
-            _wallet_log_label(wallet),
-            f"waiting for Lighter account | {POST_DEPOSIT_ACCOUNT_POLL_ATTEMPTS}x{POST_DEPOSIT_ACCOUNT_POLL_SECONDS}s"
-        )
+        step(_wallet_log_label(wallet), "ожидание аккаунта")
         for attempt in range(POST_DEPOSIT_ACCOUNT_POLL_ATTEMPTS):
             if attempt > 0:
                 await asyncio.sleep(POST_DEPOSIT_ACCOUNT_POLL_SECONDS)
             if await self._resolve_wallet_account(wallet):
                 return True
-        warn(_wallet_log_label(wallet), "account not created yet; run mode 4 again later")
+        warn(_wallet_log_label(wallet), "аккаунт ещё создаётся; повтори режим 4 позже")
         return False
 
     async def balances(self) -> None:
         services = await self._services(require_trading=False)
         try:
-            section("Balances", f"parallel={len(services)}")
+            section("Балансы", f"{len(services)} кошельков")
 
             async def read_balance(svc: LighterService) -> tuple[Decimal, str]:
                 try:
@@ -318,19 +327,13 @@ class Controller:
                         and Decimal(str(item.get("position", "0"))) != 0
                     ]
                     pos_text = "flat" if not positions else ", ".join(
-                        f"{item['position']} {item['symbol']} sign={item['sign']}"
+                        f"{item['position']} {item['symbol']}"
                         for item in positions
                     )
-                    info(
+                    plain(
                         svc.label(),
                         f"available=${available:.4f} | collateral=${collateral:.4f} | position={pos_text}"
                     )
-                    try:
-                        multiplier = await svc.reward_point_multiplier()
-                        if multiplier is not None:
-                            info(svc.label(), f"API reward_point_multiplier={multiplier}x")
-                    except Exception as exc:
-                        warn(svc.label(), f"reward multiplier unavailable: {exception_summary(exc)}")
                     line = f"✅ {_tg_service_label(svc)} | ${available:.4f} | {pos_text}"
                     return available, line
                 except Exception as exc:
@@ -339,10 +342,10 @@ class Controller:
 
             results = await asyncio.gather(*(read_balance(svc) for svc in services))
             total = sum((balance for balance, _ in results), Decimal(0))
-            ok("Total available", f"${total:.4f}")
-            lines = ["💰 CHECKED BALANCES | Lighter", ""]
+            ok("Доступно", f"${total:.4f}")
+            lines = [f"💰 БАЛАНСЫ | {len(services)} кошельков", ""]
             lines.extend(line for _, line in results)
-            lines.extend(["", f"💎 Total: ${total:.4f} across {len(services)} wallet(s)"])
+            lines.extend(["", f"💎 Всего доступно: ${total:.4f}"])
             await send_tg("\n".join(lines))
         finally:
             await asyncio.gather(*(svc.close() for svc in services), return_exceptions=True)
@@ -421,7 +424,7 @@ class Controller:
         metrics: dict[LighterService, TradeMetrics] = {}
         for service, result in zip(services, results):
             if isinstance(result, BaseException):
-                warn(service.label(), f"trade report failed: {exception_summary(result)}")
+                warn(service.label(), f"PnL недоступен: {exception_summary(result)}")
             else:
                 metrics[service] = result
         return metrics
@@ -429,7 +432,7 @@ class Controller:
     async def close_positions(self) -> None:
         services = await self._services(require_trading=True)
         try:
-            section("Close all", "leader LIMIT -> follower MARKET -> residual MARKET")
+            section("Закрытие позиций", ", ".join(f"{symbol}/USDG" for symbol in TOKENS_TO_TRADE))
             close_started_ms = now_ms()
             states_before = await asyncio.gather(
                 *(asyncio.to_thread(service.account_state) for service in services),
@@ -457,7 +460,7 @@ class Controller:
                 for service, position in read_errors:
                     warn(
                         service.label(),
-                        f"position read failed; forcing residual close: {exception_summary(position)}",
+                        f"позиция не прочитана; выполняется принудительное закрытие: {exception_summary(position)}",
                     )
                 entries = [
                     (service, position)
@@ -468,7 +471,7 @@ class Controller:
                     if read_errors:
                         await flatten_positions(services, meta)
                     else:
-                        skip(symbol, "no open positions")
+                        skip(symbol, "открытых позиций нет")
                     continue
 
                 positioned.update(service for service, _ in entries)
@@ -481,11 +484,10 @@ class Controller:
                 full_cycle = True
                 try:
                     report_start = await self._discover_cycle_start(positioned_services, meta)
-                    info(symbol, "full-cycle trade history located")
-                except Exception as exc:
+                except Exception:
                     full_cycle = False
                     report_start = close_started_ms
-                    warn(symbol, f"using close-only trade report: {exception_summary(exc)}")
+                    warn(symbol, "история входа недоступна; PnL рассчитан только по закрытию")
                 report_specs.append((positioned_services, meta, report_start, full_cycle))
                 biggest = max(entries, key=lambda item: abs(item[1]))
                 leader_is_long = biggest[1] > 0
@@ -495,10 +497,6 @@ class Controller:
                 follower_services = [
                     service for service, position in entries if (position > 0) != leader_is_long
                 ]
-                info(
-                    f"{symbol} paired close",
-                    f"leader positions={len(leader_services)} | followers={len(follower_services)}",
-                )
                 await close_leader_follower(
                     leader_services,
                     follower_services,
@@ -525,14 +523,14 @@ class Controller:
                 service in wallet_metrics for service in positioned
             )
 
-            lines = ["📂 POSITIONS CLOSED | Force close", ""]
+            lines = ["📂 ПОЗИЦИИ ЗАКРЫТЫ", ""]
             total_pnl = Decimal(0)
             actual_volume = Decimal(0)
             total_realized = Decimal(0)
             total_funding = Decimal(0)
             for service, before, after in zip(services, states_before, states_after):
                 if isinstance(after, BaseException):
-                    lines.append(f"❌ {_tg_service_label(service)} | balance unavailable")
+                    lines.append(f"❌ {_tg_service_label(service)} | баланс недоступен")
                     continue
                 balance_after = Decimal(str(after.get("available_balance", "0")))
                 metrics = wallet_metrics.get(service)
@@ -547,11 +545,11 @@ class Controller:
                     )
                     volume = Decimal(0)
                 else:
-                    lines.append(f"❌ {_tg_service_label(service)} | PnL unavailable")
+                    lines.append(f"❌ {_tg_service_label(service)} | PnL недоступен")
                     continue
                 total_pnl += pnl
                 actual_volume += volume
-                state = "closed" if service in positioned else "no open positions"
+                state = "закрыто" if service in positioned else "позиций не было"
                 lines.append(
                     f"✅ {_tg_service_label(service)} | {state} | "
                     f"PnL: {pnl:+.4f}$ | Bal: ${balance_after:.4f}"
@@ -562,18 +560,18 @@ class Controller:
                 if report_volume > 0
                 else Decimal(0)
             )
-            scope = "Full-cycle" if full_cycle_report and actual_volume > 0 else "Close"
+            scope = "Цикл" if full_cycle_report and actual_volume > 0 else "Закрытие"
             lines.extend(
                 [
                     "",
                     f"📊 {scope} PnL: {total_pnl:+.4f}$",
-                    f"Realized from fills: {total_realized:+.4f}$",
-                    f"Funding: {total_funding:+.4f}$",
-                    f"💰 {scope} volume: ${report_volume:.2f}",
-                    f"Cost per 100k: ${cost_per_100k:.3f}",
+                    f"PnL по сделкам: {total_realized:+.4f}$",
+                    f"Фандинг: {total_funding:+.4f}$",
+                    f"💰 Объём: ${report_volume:.2f}",
+                    f"Cost / 100k: ${cost_per_100k:.3f}",
                 ]
             )
-            ok("Close all complete", f"wallets={len(services)}")
+            ok("Позиции закрыты", f"{len(services)} кошельков")
             await send_tg("\n".join(lines))
         finally:
             await asyncio.gather(*(svc.close() for svc in services), return_exceptions=True)
@@ -585,10 +583,7 @@ class Controller:
         while True:
             book = await asyncio.to_thread(self.public.book, meta.market_id)
             if book.spread_percent <= Decimal(str(MAX_SPREAD)):
-                ok(
-                    "Spread ready",
-                    f"{book.spread_percent:.4f}% <= {Decimal(str(MAX_SPREAD)):.4f}%",
-                )
+                ok("Спред", f"{book.spread_percent:.4f}%")
                 return book
             now = loop.time()
             if now - started >= SPREAD_WAIT_TIMEOUT_SECONDS:
@@ -598,8 +593,8 @@ class Controller:
                 )
             if now >= next_log:
                 step(
-                    "Waiting for spread",
-                    f"current={book.spread_percent:.4f}% | max={Decimal(str(MAX_SPREAD)):.4f}%",
+                    "Ожидание спреда",
+                    f"{book.spread_percent:.4f}% | максимум {Decimal(str(MAX_SPREAD)):.4f}%",
                 )
                 next_log = now + SPREAD_LOG_INTERVAL_SECONDS
             await asyncio.sleep(SPREAD_POLL_INTERVAL_SECONDS)
@@ -654,25 +649,6 @@ class Controller:
         if not follower_targets:
             raise RuntimeError("Follower targets rounded to zero")
         return leader_targets, follower_targets
-
-    async def _staggered_balances(
-        self,
-        services: list[LighterService],
-    ) -> list[Decimal]:
-        delays = [0.0]
-        for _ in services[1:]:
-            delays.append(delays[-1] + pick_range(DELAY_BETWEEN_WALLETS))
-        if delays[-1] > 0:
-            step("Wallet startup stagger", f"last wallet starts in {delays[-1]:.1f}s")
-
-        async def read(service: LighterService, delay: float) -> Decimal:
-            if delay > 0:
-                await asyncio.sleep(delay)
-            return await asyncio.to_thread(service.available_balance)
-
-        return await asyncio.gather(
-            *(read(service, delay) for service, delay in zip(services, delays))
-        )
 
     async def _open_all_market(
         self,
@@ -731,7 +707,7 @@ class Controller:
         net = sum(positions, Decimal(0))
         if abs(net) >= one_unit:
             raise RuntimeError(f"Post-fill net exposure is {net} {meta.symbol}")
-        ok("Neutrality check", f"net={net} {meta.symbol}")
+        ok("Дельта нейтральна", f"LONG = SHORT | {meta.symbol}")
         return positions
 
     async def _send_open_report(
@@ -742,8 +718,8 @@ class Controller:
         allocations: list[Allocation],
     ) -> None:
         lines = [
-            f"📂 POSITIONS OPENED | Group {cycle_index}",
-            f"📊 {meta.symbol}/USDG | Spread: {book.spread_percent:.4f}% | Mid: ${book.mid:.2f}",
+            f"📂 ПОЗИЦИИ ОТКРЫТЫ | Цикл {cycle_index}",
+            f"📊 {meta.symbol}/USDG | Спред: {book.spread_percent:.4f}% | Цена: ${book.mid:.2f}",
             "",
         ]
         long_total = Decimal(0)
@@ -758,7 +734,7 @@ class Controller:
             marker = "🟢" if item.side == "long" else "🔴"
             lines.append(
                 f"{marker} {item.side.upper()} {_tg_service_label(item.service)} | "
-                f"${notional:.2f} | Lev: {item.leverage:.1f}x"
+                f"${notional:.2f} | {item.leverage:.1f}x"
             )
         lines.extend(
             ["", f"🟢 LONG: ${long_total:.2f} | 🔴 SHORT: ${short_total:.2f}"]
@@ -771,7 +747,7 @@ class Controller:
         allocations: list[Allocation],
         balances_before: dict[LighterService, Decimal],
     ) -> None:
-        lines = [f"📂 POSITIONS CLOSED | Group {cycle_index}", ""]
+        lines = [f"📂 ПОЗИЦИИ ЗАКРЫТЫ | Цикл {cycle_index}", ""]
         total_pnl = Decimal(0)
         estimated_volume = Decimal(0)
         for item in allocations:
@@ -783,7 +759,7 @@ class Controller:
             lines.append(
                 f"{marker} {item.side.upper()} {_tg_service_label(item.service)} | "
                 f"PnL: {pnl:+.4f}$ | Bal: ${balance:.4f} | "
-                f"Cycle vol: ${item.notional * Decimal(2):.2f}"
+                f"Объём: ${item.notional * Decimal(2):.2f}"
             )
         cost_per_100k = (
             -total_pnl / estimated_volume * Decimal(100_000)
@@ -793,9 +769,9 @@ class Controller:
         lines.extend(
             [
                 "",
-                f"📊 Full-cycle balance PnL: {total_pnl:+.4f}$",
-                f"💰 Estimated cycle volume: ${estimated_volume:.2f}",
-                f"Cost per 100k: ${cost_per_100k:.3f}",
+                f"📊 PnL цикла: {total_pnl:+.4f}$",
+                f"💰 Объём цикла: ${estimated_volume:.2f}",
+                f"Cost / 100k: ${cost_per_100k:.3f}",
             ]
         )
         await send_tg("\n".join(lines))
@@ -827,15 +803,17 @@ class Controller:
                 group = [group[1], group[0]]
 
             section(
-                "Delta-neutral cycle",
-                f"{symbol}/USDG | {EXECUTION_MODE} | LIVE",
+                "Дельта-нейтральная торговля",
+                f"{symbol}/USDG",
             )
-            all_balances = await self._staggered_balances(services)
+            all_balances = await asyncio.gather(
+                *(asyncio.to_thread(service.available_balance) for service in services)
+            )
             ranked = sorted(zip(services, all_balances), key=lambda item: item[1], reverse=True)
             selected_accounts = ranked[:needed]
             selected = [service for service, _ in selected_accounts]
             balances_before = dict(selected_accounts)
-            info("Group", f"{group[0]} long / {group[1]} short | selected={len(selected)}")
+            info("Группа", f"{group[0]} LONG | {group[1]} SHORT")
             await self._verify_flat(selected, symbol)
             book = await self._wait_for_spread(meta)
 
@@ -870,15 +848,11 @@ class Controller:
                 validate_maker=EXECUTION_MODE == "leader-follower",
             )
             target_base = sum((target.target_base for target in leader_targets), Decimal(0))
-            ok(
-                "Sizing",
-                f"leader={leader_side.upper()} | follower={follower_side.upper()} | "
-                f"base={target_base} {symbol} | approx=${target_base * book.mid:.2f} per side",
-            )
+            ok("Размер", f"LONG=${target_base * book.mid:.2f} | SHORT=${target_base * book.mid:.2f}")
             for item in allocations:
-                info(
+                plain(
                     item.service.label(),
-                    f"{item.side.upper()} | leverage={item.leverage:.1f}x | target=${item.notional:.2f}",
+                    f"{item.side.upper()} | ${item.notional:.2f} | {item.leverage:.1f}x",
                 )
 
             await asyncio.gather(*(service.cancel_all_orders(meta) for service in selected))
@@ -918,21 +892,24 @@ class Controller:
             leader_services = [target.service for target in leader_targets]
             follower_services = [target.service for target in follower_targets]
             if all(float(value) == 0 for value in HOLD_MINUTES):
-                step("Holding positions", "indefinitely; close via a separate mode 2 run")
+                step("Удержание", "до запуска режима 2")
                 while not is_trading_halted():
-                    await asyncio.sleep(POLL_INTERVAL_SEC)
-                step("Hold interrupted", "Force Close halt received")
+                    await asyncio.sleep(RUNTIME_POLL_INTERVAL_SECONDS)
+                step("Удержание завершено", "получен сигнал режима 2")
                 return False
 
             hold = pick_range(HOLD_MINUTES)
-            step("Holding positions", f"{hold:.2f} minute(s)")
+            step("Удержание", _duration_text(hold))
             deadline = asyncio.get_running_loop().time() + hold * 60
             while asyncio.get_running_loop().time() < deadline:
                 if is_trading_halted():
-                    step("Hold interrupted", "Force Close halt received")
+                    step("Удержание завершено", "получен сигнал режима 2")
                     return False
                 await asyncio.sleep(
-                    min(POLL_INTERVAL_SEC, max(0.1, deadline - asyncio.get_running_loop().time()))
+                    min(
+                        RUNTIME_POLL_INTERVAL_SECONDS,
+                        max(0.1, deadline - asyncio.get_running_loop().time()),
+                    )
                 )
 
             await close_leader_follower(
@@ -945,7 +922,7 @@ class Controller:
             return True
         except Exception:
             if execution_started and selected:
-                warn("Emergency cleanup", f"paired close for {len(selected)} selected wallet(s)")
+                warn("Аварийное закрытие", f"{len(selected)} кошельков")
                 try:
                     await close_leader_follower(
                         [target.service for target in leader_targets],
@@ -953,7 +930,7 @@ class Controller:
                         meta,
                     )
                 except Exception as cleanup_error:
-                    error("Emergency cleanup", exception_summary(cleanup_error))
+                    error("Аварийное закрытие", exception_summary(cleanup_error))
                     await flatten_positions(selected, meta)
             raise
 
@@ -961,12 +938,12 @@ class Controller:
         services = await self._services(require_trading=True)
         completed = 0
         failures = 0
-        await send_tg(f"BOT STARTED | {len(services)} wallet(s) | Delta-neutral mode")
+        await send_tg(f"▶️ БОТ ЗАПУЩЕН | {len(services)} кошельков | Дельта-нейтральный режим")
         try:
             while completed < TRADES_COUNT and failures < RETRY:
                 if is_trading_halted():
                     break
-                section("Cycle", f"{completed + 1}/{TRADES_COUNT}")
+                section("Цикл", f"{completed + 1}/{TRADES_COUNT}")
                 try:
                     cycle_completed = await self.trade_cycle(services, completed + 1)
                     if not cycle_completed:
@@ -975,19 +952,19 @@ class Controller:
                     failures = 0
                 except Exception as exc:
                     failures += 1
-                    error("Strategy failed", f"attempt={failures}/{RETRY} | {exception_summary(exc)}")
+                    error("Ошибка стратегии", f"попытка {failures}/{RETRY} | {exception_summary(exc)}")
                     await send_tg(
-                        f"❌ ERROR | Mode 1 | attempt {failures}/{RETRY} | {exception_summary(exc)}"
+                        f"❌ ОШИБКА | попытка {failures}/{RETRY} | {exception_summary(exc)}"
                     )
                     if failures >= RETRY:
                         raise
-                    await asyncio.sleep(POLL_INTERVAL_SEC)
+                    await asyncio.sleep(RUNTIME_POLL_INTERVAL_SECONDS)
                 if completed < TRADES_COUNT and not is_trading_halted():
                     delay = pick_range(DELAY_BETWEEN_TRADES)
-                    step("Delay between cycles", f"{delay:.1f}s")
+                    step("Пауза", f"{delay:.0f}s до следующего цикла")
                     await asyncio.sleep(delay)
         finally:
             await send_tg(
-                f"BOT STOPPED | Delta-neutral mode | completed={completed}/{TRADES_COUNT}"
+                f"⏹ БОТ ОСТАНОВЛЕН | циклов {completed}/{TRADES_COUNT}"
             )
             await asyncio.gather(*(service.close() for service in services), return_exceptions=True)

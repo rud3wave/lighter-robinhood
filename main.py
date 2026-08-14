@@ -9,7 +9,6 @@ from lighter_bot.runtime_control import (
     request_trading_halt,
 )
 from lighter_bot.telegram import send_tg
-from settings import TRADE_URL
 
 
 def print_menu() -> None:
@@ -29,9 +28,6 @@ def print_stopped() -> None:
 
 async def main() -> None:
     banner()
-    info("Target", TRADE_URL)
-    info("Trading LIVE", "modes 1-2 send transactions")
-    info("Mode 4", "live USDG deposit starts immediately")
     controller = Controller()
     print_menu()
     choice = input(paint("> ", C.BOLD + C.CYAN)).strip()
@@ -63,7 +59,7 @@ async def main() -> None:
         print_stopped()
     except Exception as exc:
         error("Ошибка режима", exception_summary(exc))
-        await send_tg(f"❌ ERROR | Mode {choice} | {exception_summary(exc)}")
+        await send_tg(f"❌ ОШИБКА | Режим {choice} | {exception_summary(exc)}")
     finally:
         if lock_acquired:
             release_trading_lock()
@@ -75,4 +71,4 @@ if __name__ == "__main__":
     except (EOFError, KeyboardInterrupt):
         print_stopped()
     except Exception as exc:
-        error("Fatal error", exception_summary(exc))
+        error("Ошибка запуска", exception_summary(exc))

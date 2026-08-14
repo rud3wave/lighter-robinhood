@@ -5,15 +5,15 @@ from typing import Any
 
 import lighter
 
-from settings import (
+from .constants import (
     API_KEY_ACTIVATION_WAIT_SECONDS,
     CHAIN_ID,
     DEFAULT_API_KEY_INDEX,
-    SLIPPAGE,
 )
+from settings import SLIPPAGE
 
 from .api import BookSnapshot, LighterPublicApi, MarketMeta
-from .pretty import info, skip, step, warn, wallet_prefix
+from .pretty import info, skip, wallet_prefix
 from .utils import base_to_int, maker_price_to_int, now_ms, price_to_int, quantize_base
 from .wallets import WalletAccount, mask_secret
 
@@ -78,38 +78,6 @@ class LighterService:
     @staticmethod
     def quantize_base_amount(meta: MarketMeta, amount: Decimal) -> Decimal:
         return quantize_base(abs(amount), meta.size_decimals)
-
-    async def reward_point_multiplier(self) -> Decimal | None:
-        """Read Lighter's authenticated reward multiplier without placing a transaction."""
-        if not self.wallet.can_trade:
-            return None
-
-        signer = lighter.SignerClient(
-            url=self.base_url,
-            account_index=self.wallet.account_index,
-            api_private_keys={self.wallet.api_key_index: self.wallet.api_private_key},
-            chain_id=CHAIN_ID,
-        )
-        _apply_proxy(signer, self.wallet.proxy_url)
-        api_client = None
-        try:
-            auth, err = signer.create_auth_token_with_expiry(api_key_index=self.wallet.api_key_index)
-            if err:
-                raise RuntimeError(f"create auth token failed: {err}")
-
-            config = lighter.Configuration(host=self.base_url)
-            config.proxy = self.wallet.proxy_url or None
-            api_client = lighter.ApiClient(config)
-            response = await lighter.ReferralApi(api_client).referral_points(
-                authorization=auth,
-                account_index=self.wallet.account_index,
-            )
-            value = getattr(response, "reward_point_multiplier", None)
-            return Decimal(str(value)) if value is not None else None
-        finally:
-            await signer.close()
-            if api_client:
-                await api_client.close()
 
     async def trade_history(
         self,
@@ -236,13 +204,12 @@ class LighterService:
         label = self.label()
         matches = await asyncio.to_thread(self.public.accounts_by_l1_address, self.wallet.address)
         if not matches:
-            skip(label, "no Lighter account found")
+            skip(label, "аккаунт Lighter не найден")
             return False
 
         account_index = int(matches[0].get("index") or matches[0].get("account_index"))
         if len(matches) > 1:
             account_index = min(int(item.get("index") or item.get("account_index")) for item in matches)
-            warn(label, "multiple accounts found, using master")
 
         api_private_key, api_public_key, err = lighter.create_api_key()
         if err:
@@ -256,7 +223,6 @@ class LighterService:
         )
         _apply_proxy(setup_client, self.wallet.proxy_url)
         try:
-            step(label, f"api_key_index {api_key_index}")
             _, err = await setup_client.change_api_key(
                 eth_private_key=self.wallet.private_key,
                 new_pubkey=api_public_key,
@@ -278,9 +244,8 @@ class LighterService:
         return True
 
     async def update_leverage(self, meta: MarketMeta, leverage: Decimal | int | float) -> None:
-        step(self.label(), f"leverage {meta.symbol} {leverage}x")
         if not self.wallet.can_trade:
-            skip("Leverage skipped", "API key is not configured")
+            skip(self.label(), "API key не настроен")
             return
         if self.dry_run:
             return
@@ -294,9 +259,8 @@ class LighterService:
         self._ensure_ok(resp, err, "update leverage")
 
     async def cancel_all_orders(self, meta: MarketMeta) -> None:
-        step(self.label(), f"cancel all {meta.symbol}")
         if not self.wallet.can_trade:
-            skip("Cancel skipped", "API key is not configured")
+            skip(self.label(), "API key не настроен")
             return
         if self.dry_run:
             return
@@ -344,7 +308,7 @@ class LighterService:
             f"${approx_usd:.2f} | {base_text} {meta.symbol} | ENTRY {price_text}",
         )
         if not self.wallet.can_trade:
-            skip("Order skipped", "API key is not configured")
+            skip(self.label(), "API key не настроен")
             return client_order_index
         if self.dry_run:
             return client_order_index
@@ -393,13 +357,15 @@ class LighterService:
         price = Decimal(price_i) / (Decimal(10) ** meta.price_decimals)
         client_order_index = (now_ms() * 1000 + random.randrange(1000)) % MAX_CLIENT_ORDER_INDEX
         action = "LONG" if is_buy else "SHORT"
-        ro = " reduce-only" if reduce_only else ""
+        notional = base_amount * price
+        base_text = f"{base_amount:.{meta.size_decimals}f}".rstrip("0").rstrip(".")
+        price_text = f"{price:.{meta.price_decimals}f}".replace(".", ",")
         info(
-            f"{self.label()} maker {action}{ro}",
-            f"base={base_amount:.8f} | price={price} | POST_ONLY",
+            f"{self.label()} {action}",
+            f"${notional:.2f} | {base_text} {meta.symbol} | ENTRY {price_text} | LIMIT",
         )
         if not self.wallet.can_trade:
-            skip("Order skipped", "API key is not configured")
+            skip(self.label(), "API key не настроен")
             return client_order_index, maker_reference
         if self.dry_run:
             return client_order_index, maker_reference
@@ -426,7 +392,7 @@ class LighterService:
     async def close_position(self, meta: MarketMeta) -> None:
         pos = await asyncio.to_thread(self.position, meta.symbol)
         if not pos:
-            skip(self.label(), f"no {meta.symbol} position")
+            skip(self.label(), f"позиция {meta.symbol} отсутствует")
             return
         sign = int(pos["sign"])
         size = abs(Decimal(str(pos["position"])))

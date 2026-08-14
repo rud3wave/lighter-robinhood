@@ -8,20 +8,22 @@ from typing import Any, Literal
 
 from settings import (
     EXECUTION_MODE,
-    HEDGE_POLL_INTERVAL_SECONDS,
-    HEDGE_SETTLE_SECONDS,
-    MAKER_REQUOTE_INTERVAL_SECONDS,
+    HEDGE_POLL_INTERVAL_MS,
+    MAKER_REQUOTE_INTERVAL_SEC,
     MAKER_REQUOTE_THRESHOLD_PERCENT,
     MAX_HEDGE_RETRIES,
-    MAX_MAKER_WAIT_SECONDS,
-    RESIDUAL_CLOSE_RETRIES,
+    MAX_MAKER_WAIT_SEC,
 )
 
 from .api import BookSnapshot, MarketMeta
+from .constants import HEDGE_SETTLE_SECONDS, RESIDUAL_CLOSE_RETRIES
 from .pretty import error, info, ok, step, warn
 
 
 PositionSide = Literal["long", "short"]
+HEDGE_POLL_INTERVAL_SECONDS = HEDGE_POLL_INTERVAL_MS / 1000
+MAKER_REQUOTE_INTERVAL_SECONDS = MAKER_REQUOTE_INTERVAL_SEC
+MAX_MAKER_WAIT_SECONDS = MAX_MAKER_WAIT_SEC
 
 
 @dataclass(frozen=True)
@@ -260,11 +262,6 @@ async def execute_paired(
             if not pending:
                 return
 
-            info(
-                "Follower hedge",
-                f"attempt={attempt}/{MAX_HEDGE_RETRIES} | orders={len(pending)} | "
-                f"base={sum((item[1] for item in pending), Decimal(0))} {meta.symbol}",
-            )
             books = await _books([item[0] for item in pending], meta)
             results = await asyncio.gather(
                 *(
@@ -282,7 +279,7 @@ async def execute_paired(
             )
             for (target, _), result in zip(pending, results):
                 if isinstance(result, BaseException):
-                    warn(target.service.label(), f"follower IOC rejected: {result}")
+                    warn(target.service.label(), f"хедж не исполнен: {result}")
 
             deadline = time.monotonic() + HEDGE_SETTLE_SECONDS
             while time.monotonic() < deadline:
@@ -314,8 +311,8 @@ async def execute_paired(
         ]
         if too_small:
             warn(
-                "Leader residual",
-                "below maker minimum; completing only the residual via MARKET",
+                "Остаток позиции",
+                "меньше лимита LIMIT-ордера; закрывается через MARKET",
             )
             await asyncio.gather(
                 *(
@@ -348,11 +345,6 @@ async def execute_paired(
         quoted_reference = sum(prices, Decimal(0)) / Decimal(len(prices))
         quote_started = time.monotonic()
 
-    info(
-        "Leader-follower",
-        f"leader={maker_side.upper()} {maker_total} | follower={follower_side.upper()} "
-        f"{follower_total} {meta.symbol}",
-    )
     try:
         await cancel_maker_orders()
         maker_progress = Decimal(0)
@@ -379,8 +371,8 @@ async def execute_paired(
             if next_progress > maker_progress:
                 maker_progress = next_progress
                 step(
-                    "Leader fill",
-                    f"{maker_progress}/{maker_total} {meta.symbol}; hedging delta",
+                    "Исполнение LIMIT",
+                    f"{maker_progress}/{maker_total} {meta.symbol}",
                 )
                 await hedge_to(maker_progress)
             if maker_progress >= maker_total:
@@ -404,8 +396,6 @@ async def execute_paired(
                 else Decimal("Infinity")
             )
             if not all(active) or drift >= Decimal(str(MAKER_REQUOTE_THRESHOLD_PERCENT)):
-                reason = "inactive order" if not all(active) else f"quote drift {drift:.4f}%"
-                step("Leader re-quote", reason)
                 await cancel_maker_orders()
                 progress = await read_maker_progress()
                 await hedge_to(sum(progress, Decimal(0)))
@@ -439,7 +429,6 @@ async def execute_paired(
         ]
         if mismatches:
             raise RuntimeError(f"Per-wallet fill mismatch: {', '.join(mismatches)}")
-        ok("Pair filled", f"base={maker_total} {meta.symbol} on both sides")
     finally:
         await asyncio.gather(
             *(target.service.cancel_all_orders(meta) for target in makers),
@@ -466,19 +455,14 @@ async def flatten_positions(services: list[Any], meta: MarketMeta) -> None:
             if isinstance(position, BaseException) or abs(position) >= one_unit
         ]
         if not residuals:
-            ok("Residual check", f"all {len(services)} wallet(s) flat")
             return
-        step(
-            "Residual close",
-            f"attempt={attempt}/{RESIDUAL_CLOSE_RETRIES} | wallets={len(residuals)}",
-        )
         results = await asyncio.gather(
             *(service.close_position(meta) for service in residuals),
             return_exceptions=True,
         )
         for service, result in zip(residuals, results):
             if isinstance(result, BaseException):
-                error(service.label(), f"residual close failed: {result}")
+                error(service.label(), f"остаток не закрыт: {result}")
         await asyncio.sleep(1)
 
     positions = await asyncio.gather(
@@ -525,7 +509,7 @@ async def close_leader_follower(
         ]
         if read_errors:
             for service, position in read_errors:
-                warn(service.label(), f"paired close position read failed: {position}")
+                warn(service.label(), f"позиция не прочитана: {position}")
             return
 
         maker_active = [
@@ -543,7 +527,7 @@ async def close_leader_follower(
         maker_signs = {position > 0 for _, position in maker_active}
         follower_signs = {position > 0 for _, position in follower_active}
         if len(maker_signs) != 1 or len(follower_signs) != 1 or maker_signs == follower_signs:
-            warn("Paired close", "positions are not opposite; using MARKET fallback")
+            warn("Закрытие", "позиции не совпали по сторонам; используется MARKET")
             return
 
         maker_side: PositionSide = "short" if next(iter(maker_signs)) else "long"
@@ -572,6 +556,6 @@ async def close_leader_follower(
             halt_check=lambda: False,
         )
     except Exception as exc:
-        warn("Paired close", f"degraded to MARKET: {exc}")
+        warn("Закрытие", f"LIMIT недоступен; используется MARKET: {exc}")
     finally:
         await flatten_positions(all_services, meta)

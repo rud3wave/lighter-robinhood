@@ -232,6 +232,39 @@ class ServiceContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("reduce-only", line)
         self.assertNotIn("price_i", line)
 
+    async def test_limit_order_log_matches_market_order_format(self) -> None:
+        wallet = WalletAccount(
+            index=4,
+            private_key="0x" + "1" * 64,
+            address="0xaFBc" + "0" * 32 + "1405",
+            account_index=1,
+            api_private_key="api-key",
+        )
+        service = LighterService(wallet, "https://example.invalid", dry_run=True)
+        book = BookSnapshot(
+            best_bid=Decimal("1875.16"),
+            best_ask=Decimal("1875.18"),
+        )
+
+        output = io.StringIO()
+        with patch("lighter_bot.pretty.USE_COLOR", False), redirect_stdout(output):
+            await service.place_post_only(
+                META,
+                book,
+                "short",
+                Decimal("0.0073"),
+                reduce_only=True,
+            )
+
+        line = output.getvalue()
+        self.assertIn(
+            "0xaFBc...1405 SHORT | $13.69 | 0.0073 ETH | ENTRY 1875,17 | LIMIT",
+            line,
+        )
+        self.assertNotIn("wallet[4]", line)
+        self.assertNotIn("reduce-only", line)
+        self.assertNotIn("POST_ONLY", line)
+
     async def test_immediate_cancel_uses_nil_timestamp(self) -> None:
         class FakeClient:
             CANCEL_ALL_TIF_IMMEDIATE = 0
