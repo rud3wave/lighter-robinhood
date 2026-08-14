@@ -110,8 +110,8 @@
 ### 1. Клонируй репозиторий
 
 ```powershell
-git clone https://github.com/rud3wave/lighter-robinhood-lit.git
-cd lighter-robinhood-lit
+git clone https://github.com/rud3wave/lighter-robinhood.git
+cd lighter-robinhood
 ```
 
 Команду `npm start` нужно выполнять именно здесь — рядом с `package.json`.
@@ -305,7 +305,7 @@ export const TELEGRAM = {
 ## Файлы проекта
 
 ```text
-lighter-robinhood-lit/
+lighter-robinhood/
 |-- main.py                         меню и точка входа
 |-- settings.py                     пользовательские настройки
 |-- global.js                       Telegram и пароль; не попадает в Git
@@ -341,7 +341,7 @@ lighter-robinhood-lit/
 Команда запущена не из папки проекта:
 
 ```powershell
-cd lighter-robinhood-lit
+cd lighter-robinhood
 npm start
 ```
 
