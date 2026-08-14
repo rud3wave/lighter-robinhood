@@ -1,7 +1,7 @@
 {
-  "name": "lighter-robinhood-lit",
+  "name": "lighter-robinhood-eth",
   "version": "1.0.0",
-  "description": "Robinhood Chain Lighter LIT trading bot scaffold",
+  "description": "Robinhood Chain Lighter ETH/USDG delta-neutral bot",
   "private": false,
   "type": "module",
   "scripts": {

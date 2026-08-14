@@ -6,11 +6,15 @@ __pycache__/
 .env
 .env.*
 !.env.example
+global.js
 
-input_data/accounts.csv
 input_data/*.local.csv
+input_data/privatekeys.txt
+input_data/proxies.txt
+databases/
+.lighter-trading.lock
+.lighter-halt
 
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-

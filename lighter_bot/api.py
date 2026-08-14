@@ -1,6 +1,7 @@
 import json
 import urllib.parse
 import urllib.request
+from urllib.error import HTTPError
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -32,8 +33,9 @@ class BookSnapshot:
 
 
 class LighterPublicApi:
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, proxy_url: str = ""):
         self.base_url = base_url.rstrip("/")
+        self.proxy_url = proxy_url
 
     def _get(self, path: str, **params: Any) -> dict[str, Any]:
         query = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
@@ -41,7 +43,14 @@ class LighterPublicApi:
         if query:
             url = f"{url}?{query}"
         req = urllib.request.Request(url, headers={"accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        if self.proxy_url:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": self.proxy_url, "https": self.proxy_url})
+            )
+            response = opener.open(req, timeout=30)
+        else:
+            response = urllib.request.urlopen(req, timeout=30)
+        with response as resp:
             return json.loads(resp.read().decode("utf-8"))
 
     def market_meta(self, symbol: str) -> MarketMeta:
@@ -78,3 +87,11 @@ class LighterPublicApi:
             raise RuntimeError(f"Lighter account {account_index} not found")
         return accounts[0]
 
+    def accounts_by_l1_address(self, l1_address: str) -> list[dict[str, Any]]:
+        try:
+            payload = self._get("/api/v1/accountsByL1Address", l1_address=l1_address)
+        except HTTPError as exc:
+            if exc.code == 400:
+                return []
+            raise
+        return list(payload.get("sub_accounts") or payload.get("accounts") or [])

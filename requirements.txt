@@ -1,2 +1,4 @@
-lighter-sdk>=0.1.0
-
+lighter-sdk>=1.1.2
+eth-account>=0.13.4
+pycryptodome>=3.23.0
+web3>=7.12.0

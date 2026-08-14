@@ -30,8 +30,20 @@ def base_to_int(base_amount: Decimal, decimals: int) -> int:
     return max(1, quantize_decimal(base_amount, decimals, ROUND_FLOOR))
 
 
+def quantize_base(base_amount: Decimal, decimals: int) -> Decimal:
+    scale = Decimal(10) ** decimals
+    units = (base_amount * scale).to_integral_value(rounding=ROUND_FLOOR)
+    return units / scale
+
+
 def price_to_int(price: Decimal, decimals: int, is_buy: bool) -> int:
     rounding = ROUND_CEILING if is_buy else ROUND_FLOOR
+    return max(1, quantize_decimal(price, decimals, rounding))
+
+
+def maker_price_to_int(price: Decimal, decimals: int, is_buy: bool) -> int:
+    # A maker buy must not round above the bid; a maker sell must not round below the ask.
+    rounding = ROUND_FLOOR if is_buy else ROUND_CEILING
     return max(1, quantize_decimal(price, decimals, rounding))
 
 
@@ -43,4 +55,3 @@ async def gather_limited(limit: int, coros: Iterable):
             return await coro
 
     return await asyncio.gather(*(run(coro) for coro in coros))
-
