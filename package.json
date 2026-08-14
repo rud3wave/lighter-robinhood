@@ -4,8 +4,14 @@
   "description": "Robinhood Chain Lighter ETH/USDG delta-neutral bot",
   "private": false,
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
+    "postinstall": "python scripts/setup.py",
+    "setup": "python scripts/setup.py",
     "start": ".\\.venv\\Scripts\\python.exe main.py",
-    "start:system-python": "python main.py"
+    "start:system-python": "python main.py",
+    "test": ".\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v"
   }
 }

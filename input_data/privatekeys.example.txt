@@ -1,2 +1,0 @@
-# One EVM private key per line. Use the L1 wallet that owns the Lighter account.
-# <64-hex-character-evm-private-key>

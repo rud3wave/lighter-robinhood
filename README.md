@@ -104,37 +104,29 @@
 - EVM-приватные ключи кошельков Robinhood Chain.
 - Уникальные HTTP/HTTPS-прокси, если включён строгий режим изоляции.
 
-Приватные ключи Solana/Phoenix не подходят. Нужны EVM-ключи длиной 64
-шестнадцатеричных символа; префикс `0x` необязателен.
+Для работы нужны EVM-ключи длиной 64 шестнадцатеричных символа; префикс `0x`
+необязателен.
 
-### 1. Открой папку проекта
+### 1. Клонируй репозиторий
 
 ```powershell
-cd D:\soft\lighter-robinhood-lit
+git clone https://github.com/rud3wave/lighter-robinhood-lit.git
+cd lighter-robinhood-lit
 ```
 
 Команду `npm start` нужно выполнять именно здесь — рядом с `package.json`.
 
-### 2. Создай Python-окружение
+### 2. Установи зависимости
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+npm install
 ```
 
-Если PowerShell запрещает активацию скрипта, окружение можно не активировать:
+Команда автоматически создаст `.venv`, установит Python-зависимости и
+подготовит локальные `global.js`, `input_data/privatekeys.txt` и
+`input_data/proxies.txt`. Существующие файлы и настройки не перезаписываются.
 
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-### 3. Создай локальный `global.js`
-
-```powershell
-Copy-Item global.example.js global.js
-```
+### 3. Настрой `global.js`
 
 Открой `global.js` и задай пароль:
 
@@ -316,9 +308,9 @@ export const TELEGRAM = {
 lighter-robinhood-lit/
 |-- main.py                         меню и точка входа
 |-- settings.py                     пользовательские настройки
-|-- global.example.js               безопасный шаблон локального конфига
 |-- global.js                       Telegram и пароль; не попадает в Git
 |-- package.json                    команда npm start
+|-- package-lock.json               зафиксированная npm-конфигурация
 |-- requirements.txt                Python-зависимости
 |-- input_data/
 |   |-- privatekeys.txt             EVM-ключи; не попадают в Git
@@ -326,6 +318,8 @@ lighter-robinhood-lit/
 |-- databases/
 |   `-- wallets.json                зашифрованный внутренний кэш
 |-- lighter_bot/                    торговая логика и адаптеры Lighter
+|-- scripts/
+|   `-- setup.py                    автоматическая подготовка после npm install
 `-- tests/                          автоматические тесты
 ```
 
@@ -347,7 +341,7 @@ lighter-robinhood-lit/
 Команда запущена не из папки проекта:
 
 ```powershell
-cd D:\soft\lighter-robinhood-lit
+cd lighter-robinhood-lit
 npm start
 ```
 

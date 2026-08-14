@@ -112,7 +112,7 @@ def validate_evm_private_key(private_key: str) -> str:
     if not re.fullmatch(r"[0-9a-fA-F]{64}", key):
         raise RuntimeError(
             "privatekeys.txt must contain EVM private keys for Lighter "
-            "(64 hex chars, optional 0x). Phoenix/Solana keys are not compatible."
+            "(64 hex chars, optional 0x)."
         )
     return "0x" + key
 

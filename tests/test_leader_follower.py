@@ -169,7 +169,7 @@ class AllocationTests(unittest.TestCase):
                 attempts=3,
             )
 
-    def test_five_wallet_phoenix_group_is_feasible(self) -> None:
+    def test_five_wallet_group_is_feasible(self) -> None:
         random.seed(17)
         balances = ["19.8942", "19.8942", "14.9086", "9.9230", "5.5855"]
         result = calculate_allocation(

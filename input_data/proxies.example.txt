@@ -1,3 +1,0 @@
-# Optional. One proxy per line. Formats:
-# Without auth: http://HOST:PORT
-# With auth: add USER, PASSWORD, and @ before HOST using standard URL syntax.

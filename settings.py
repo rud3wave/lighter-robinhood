@@ -66,7 +66,7 @@ TOKENS_TO_TRADE = ["ETH"]
 # 30-40% = консервативнее, меньше объём.
 # 50-60% = средний риск.
 # 70-80% = агрессивно.
-# 85-100% = очень агрессивно, как в текущем Phoenix-конфиге.
+# 85-100% = очень агрессивный профиль с максимальным использованием маржи.
 POSITION_PERCENT = [85, 100]
 
 # Диапазон плеча для каждого токена: [мин, макс].
@@ -209,7 +209,7 @@ DEPOSIT_TOKEN_SYMBOL = "USDG"
 DEFAULT_API_KEY_INDEX = 4
 API_KEY_ACTIVATION_WAIT_SECONDS = 10
 
-# Адаптеры единиц измерения Phoenix -> Python/Lighter SDK.
+# Внутренние адаптеры единиц измерения для Lighter SDK.
 SPREAD_POLL_INTERVAL_SECONDS = POLL_INTERVAL_SEC
 SPREAD_LOG_INTERVAL_SECONDS = 15
 SPREAD_WAIT_TIMEOUT_SECONDS = 180
