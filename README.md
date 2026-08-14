@@ -122,8 +122,9 @@ npm install
 ```
 
 Команда автоматически создаст `.venv`, установит Python-зависимости и
-подготовит локальные `global.js`, `input_data/privatekeys.txt` и
-`input_data/proxies.txt`. Существующие файлы и настройки не перезаписываются.
+подготовит локальный `global.js`. Файлы `input_data/privatekeys.txt` и
+`input_data/proxies.txt` уже лежат в репозитории пустыми; существующие данные не
+перезаписываются.
 
 ### 3. Настрой `global.js`
 
@@ -312,8 +313,8 @@ lighter-robinhood/
 |-- package-lock.json               зафиксированная npm-конфигурация
 |-- requirements.txt                Python-зависимости
 |-- input_data/
-|   |-- privatekeys.txt             EVM-ключи; не попадают в Git
-|   `-- proxies.txt                 прокси; не попадают в Git
+|   |-- privatekeys.txt             EVM-ключи, один на строку
+|   `-- proxies.txt                 прокси, один на строку
 |-- databases/
 |   `-- wallets.json                зашифрованный внутренний кэш
 |-- lighter_bot/                    торговая логика и адаптеры Lighter
