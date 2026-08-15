@@ -16,7 +16,7 @@ from .constants import (
 from settings import DEPOSIT_ALL
 
 from .api import LighterPublicApi
-from .pretty import ok, plain, skip, wallet_prefix
+from .pretty import fmt_number, ok, plain, skip, wallet_prefix
 from .utils import pick_range
 from .wallets import WalletAccount, mask_secret
 
@@ -164,15 +164,19 @@ async def deposit_token(wallet: WalletAccount, amount: Decimal | None = None) ->
         skip(label, f"баланс {DEPOSIT_TOKEN_SYMBOL}=0")
         return None
     if plan.amount < plan.min_transfer:
-        skip(label, f"депозит меньше минимума {plan.min_transfer} {DEPOSIT_TOKEN_SYMBOL}")
+        skip(
+            label,
+            f"депозит меньше минимума "
+            f"{fmt_number(plan.min_transfer)} {DEPOSIT_TOKEN_SYMBOL}",
+        )
         return None
     if plan.balance_i < plan.amount_i:
         skip(label, f"недостаточно {DEPOSIT_TOKEN_SYMBOL}")
         return None
     plain(
         label,
-        f"баланс={plan.balance:.6f} {DEPOSIT_TOKEN_SYMBOL} | "
-        f"депозит={plan.amount:.6f} {DEPOSIT_TOKEN_SYMBOL}",
+        f"баланс={fmt_number(plan.balance)} {DEPOSIT_TOKEN_SYMBOL} | "
+        f"депозит={fmt_number(plan.amount)} {DEPOSIT_TOKEN_SYMBOL}",
     )
     intent_address = Web3.to_checksum_address(await _intent_address(wallet))
     tx_hash, _ = await asyncio.to_thread(
@@ -181,7 +185,11 @@ async def deposit_token(wallet: WalletAccount, amount: Decimal | None = None) ->
         plan,
         intent_address,
     )
-    ok(label, f"задепано {plan.amount:.6f} {DEPOSIT_TOKEN_SYMBOL} | tx {mask_secret(tx_hash)}")
+    ok(
+        label,
+        f"задепано {fmt_number(plan.amount)} {DEPOSIT_TOKEN_SYMBOL} | "
+        f"tx {mask_secret(tx_hash)}",
+    )
     return tx_hash
 
 

@@ -44,8 +44,8 @@ class DepositLogTests(unittest.IsolatedAsyncioTestCase):
             await deposit_token(wallet)
 
         log = output.getvalue()
-        self.assertIn("0x5DbC...BDA5 | баланс=12.500000 USDG | депозит=12.500000 USDG", log)
-        self.assertIn("задепано 12.500000 USDG | tx 0x3333...3333", log)
+        self.assertIn("0x5DbC...BDA5 | баланс=12.5 USDG | депозит=12.5 USDG", log)
+        self.assertIn("задепано 12.5 USDG | tx 0x3333...3333", log)
         self.assertNotIn("wallet[3]", log)
         self.assertNotIn("block", log)
         self.assertNotIn("tx sent", log)

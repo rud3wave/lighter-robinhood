@@ -6,11 +6,13 @@ from settings import (
     DEPOSIT_ALL,
     DEPOSIT_AMOUNT,
     DELAY_BETWEEN_TRADES,
+    DELAY_BETWEEN_WALLETS,
     EXECUTION_MODE,
     GROUP_CONFIGS,
     HOLD_MINUTES,
     MAX_SPREAD,
     POSITION_PERCENT,
+    POLL_INTERVAL_SEC,
     RETRY,
     TOKEN_LEVERAGE,
     TOKENS_TO_TRADE,
@@ -25,13 +27,23 @@ from .constants import (
     DEPOSIT_TOKEN_SYMBOL,
     POST_DEPOSIT_ACCOUNT_POLL_ATTEMPTS,
     POST_DEPOSIT_ACCOUNT_POLL_SECONDS,
-    RUNTIME_POLL_INTERVAL_SECONDS,
     SPREAD_LOG_INTERVAL_SECONDS,
-    SPREAD_POLL_INTERVAL_SECONDS,
     SPREAD_WAIT_TIMEOUT_SECONDS,
 )
 from .deposit import deposit_token, pick_deposit_amount
-from .pretty import error, exception_summary, info, ok, plain, section, skip, step, warn, wallet_prefix
+from .pretty import (
+    error,
+    exception_summary,
+    fmt_number,
+    info,
+    ok,
+    plain,
+    section,
+    skip,
+    step,
+    warn,
+    wallet_prefix,
+)
 from .paired_execution import (
     PairedTarget,
     allocate_targets,
@@ -42,6 +54,11 @@ from .paired_execution import (
 from .referral import use_referral
 from .runtime_control import is_trading_halted
 from .service import LighterService
+from .settings_validation import (
+    validate_group_wallet_count,
+    validate_market_leverage,
+    validate_settings,
+)
 from .telegram import send_tg
 from .trade_report import TradeMetrics, discover_open_timestamp, summarize_trades
 from .utils import now_ms, pick_range
@@ -72,11 +89,15 @@ def _duration_text(minutes: float) -> str:
 
 class Controller:
     def __init__(self):
+        validate_settings()
         self.public = LighterPublicApi(API_BASE_URL)
         self.metas = {
             symbol: self.public.market_meta(symbol)
             for symbol in dict.fromkeys(TOKENS_TO_TRADE)
         }
+        validate_market_leverage(
+            {symbol: meta.max_leverage for symbol, meta in self.metas.items()}
+        )
 
     def _meta(self, symbol: str):
         try:
@@ -88,12 +109,17 @@ class Controller:
         meta = self._meta(TOKENS_TO_TRADE[0])
         book = self.public.book(meta.market_id)
         section("Market info", f"{meta.symbol} id={meta.market_id}")
-        info("Best bid / ask", f"{book.best_bid} / {book.best_ask}")
-        info("Spread", f"{book.spread_percent:.4f}%")
+        info(
+            "Best bid / ask",
+            f"{fmt_number(book.best_bid)} / {fmt_number(book.best_ask)}",
+        )
+        info("Spread", f"{fmt_number(book.spread_percent)}%")
         info(
             "Limits",
-            f"min base={meta.min_base_amount}, min quote=${meta.min_quote_amount}, "
-            f"size_dec={meta.size_decimals}, price_dec={meta.price_decimals}, max lev={meta.max_leverage}x"
+            f"min base={fmt_number(meta.min_base_amount)}, "
+            f"min quote=${fmt_number(meta.min_quote_amount)}, "
+            f"size_dec={meta.size_decimals}, price_dec={meta.price_decimals}, "
+            f"max lev={fmt_number(meta.max_leverage)}x",
         )
 
     def setup_status(self) -> None:
@@ -160,7 +186,7 @@ class Controller:
             raise RuntimeError("No wallets loaded from input_data/privatekeys.txt")
 
         section(
-            f"Реферал + депозит {DEPOSIT_TOKEN_SYMBOL}",
+            f"Регистрация + пополнение {DEPOSIT_TOKEN_SYMBOL}",
             f"{len(wallets)} кошельков | {'весь баланс' if DEPOSIT_ALL else DEPOSIT_AMOUNT}",
         )
 
@@ -243,6 +269,14 @@ class Controller:
 
     def _load_wallets(self) -> list[WalletAccount]:
         return init_wallets()
+
+    async def _stagger_trading_wallets(self, services: list[LighterService]) -> None:
+        for index, service in enumerate(services):
+            if index > 0:
+                delay = pick_range(DELAY_BETWEEN_WALLETS)
+                if delay > 0:
+                    await asyncio.sleep(delay)
+            await asyncio.to_thread(service.account_state)
 
     async def _prepare_wallets(self, wallets: list[WalletAccount], require_trading: bool) -> list[WalletAccount]:
         async def resolve_one(wallet: WalletAccount) -> bool:
@@ -327,14 +361,15 @@ class Controller:
                         and Decimal(str(item.get("position", "0"))) != 0
                     ]
                     pos_text = "flat" if not positions else ", ".join(
-                        f"{item['position']} {item['symbol']}"
+                        f"{fmt_number(item['position'])} {item['symbol']}"
                         for item in positions
                     )
                     plain(
                         svc.label(),
-                        f"available=${available:.4f} | collateral=${collateral:.4f} | position={pos_text}"
+                        f"available=${fmt_number(available)} | "
+                        f"collateral=${fmt_number(collateral)} | position={pos_text}",
                     )
-                    line = f"✅ {_tg_service_label(svc)} | ${available:.4f} | {pos_text}"
+                    line = f"✅ {_tg_service_label(svc)} | ${fmt_number(available)} | {pos_text}"
                     return available, line
                 except Exception as exc:
                     error(svc.label(), exception_summary(exc))
@@ -342,10 +377,10 @@ class Controller:
 
             results = await asyncio.gather(*(read_balance(svc) for svc in services))
             total = sum((balance for balance, _ in results), Decimal(0))
-            ok("Доступно", f"${total:.4f}")
+            ok("Доступно", f"${fmt_number(total)}")
             lines = [f"💰 БАЛАНСЫ | {len(services)} кошельков", ""]
             lines.extend(line for _, line in results)
-            lines.extend(["", f"💎 Всего доступно: ${total:.4f}"])
+            lines.extend(["", f"💎 Всего доступно: ${fmt_number(total)}"])
             await send_tg("\n".join(lines))
         finally:
             await asyncio.gather(*(svc.close() for svc in services), return_exceptions=True)
@@ -396,7 +431,7 @@ class Controller:
             end_timestamp_ms = now_ms()
             for attempt in range(1, 7):
                 if attempt > 1:
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(POLL_INTERVAL_SEC)
                 end_timestamp_ms = now_ms()
                 trades = await service.trade_history(
                     meta,
@@ -528,31 +563,49 @@ class Controller:
             actual_volume = Decimal(0)
             total_realized = Decimal(0)
             total_funding = Decimal(0)
+            total_fees = Decimal(0)
+            fees_complete = True
             for service, before, after in zip(services, states_before, states_after):
                 if isinstance(after, BaseException):
                     lines.append(f"❌ {_tg_service_label(service)} | баланс недоступен")
+                    if service in positioned:
+                        fees_complete = False
                     continue
                 balance_after = Decimal(str(after.get("available_balance", "0")))
                 metrics = wallet_metrics.get(service)
                 if metrics is not None and metrics.fills > 0:
                     pnl = metrics.net_pnl
                     volume = metrics.volume
+                    fee = metrics.trading_fee
                     total_realized += metrics.realized_pnl
                     total_funding += metrics.funding
+                    total_fees += fee
                 elif not isinstance(before, BaseException):
                     pnl = Decimal(str(after.get("collateral", "0"))) - Decimal(
                         str(before.get("collateral", "0"))
                     )
                     volume = Decimal(0)
+                    fee = Decimal(0) if service not in positioned else None
+                    if fee is None:
+                        fees_complete = False
                 else:
                     lines.append(f"❌ {_tg_service_label(service)} | PnL недоступен")
+                    if service in positioned:
+                        fees_complete = False
                     continue
                 total_pnl += pnl
                 actual_volume += volume
                 state = "закрыто" if service in positioned else "позиций не было"
+                fee_text = f"${fmt_number(fee)}" if fee is not None else "н/д"
+                plain(
+                    _tg_service_label(service),
+                    f"{state} | PnL: {fmt_number(pnl, signed=True)}$ | "
+                    f"Комиссия: {fee_text} | Bal: ${fmt_number(balance_after)}",
+                )
                 lines.append(
                     f"✅ {_tg_service_label(service)} | {state} | "
-                    f"PnL: {pnl:+.4f}$ | Bal: ${balance_after:.4f}"
+                    f"PnL: {fmt_number(pnl, signed=True)}$ | "
+                    f"Комиссия: {fee_text} | Bal: ${fmt_number(balance_after)}"
                 )
             report_volume = actual_volume or fallback_close_volume
             cost_per_100k = (
@@ -561,17 +614,32 @@ class Controller:
                 else Decimal(0)
             )
             scope = "Цикл" if full_cycle_report and actual_volume > 0 else "Закрытие"
+            if fees_complete:
+                fee_percent = (
+                    total_fees / report_volume * Decimal(100)
+                    if report_volume > 0
+                    else Decimal(0)
+                )
+                fee_summary = (
+                    f"${fmt_number(total_fees)} ({fmt_number(fee_percent)}%)"
+                )
+            else:
+                fee_summary = "н/д"
             lines.extend(
                 [
                     "",
-                    f"📊 {scope} PnL: {total_pnl:+.4f}$",
-                    f"PnL по сделкам: {total_realized:+.4f}$",
-                    f"Фандинг: {total_funding:+.4f}$",
-                    f"💰 Объём: ${report_volume:.2f}",
-                    f"Cost / 100k: ${cost_per_100k:.3f}",
+                    f"📊 {scope} PnL: {fmt_number(total_pnl, signed=True)}$",
+                    f"PnL по сделкам: {fmt_number(total_realized, signed=True)}$",
+                    f"Фандинг: {fmt_number(total_funding, signed=True)}$",
+                    f"Комиссия: {fee_summary}",
+                    f"💰 Объём: ${fmt_number(report_volume)}",
+                    f"Cost / 100k: ${fmt_number(cost_per_100k)}",
                 ]
             )
-            ok("Позиции закрыты", f"{len(services)} кошельков")
+            ok(
+                "Позиции закрыты",
+                f"{len(services)} кошельков | Комиссия: {fee_summary}",
+            )
             await send_tg("\n".join(lines))
         finally:
             await asyncio.gather(*(svc.close() for svc in services), return_exceptions=True)
@@ -583,21 +651,23 @@ class Controller:
         while True:
             book = await asyncio.to_thread(self.public.book, meta.market_id)
             if book.spread_percent <= Decimal(str(MAX_SPREAD)):
-                ok("Спред", f"{book.spread_percent:.4f}%")
+                ok("Спред", f"{fmt_number(book.spread_percent)}%")
                 return book
             now = loop.time()
             if now - started >= SPREAD_WAIT_TIMEOUT_SECONDS:
                 raise RuntimeError(
-                    f"Spread stayed at {book.spread_percent:.4f}% above MAX_SPREAD={MAX_SPREAD}% "
+                    f"Spread stayed at {fmt_number(book.spread_percent)}% "
+                    f"above MAX_SPREAD={fmt_number(MAX_SPREAD)}% "
                     f"for {SPREAD_WAIT_TIMEOUT_SECONDS}s"
                 )
             if now >= next_log:
                 step(
                     "Ожидание спреда",
-                    f"{book.spread_percent:.4f}% | максимум {Decimal(str(MAX_SPREAD)):.4f}%",
+                    f"{fmt_number(book.spread_percent)}% | "
+                    f"максимум {fmt_number(MAX_SPREAD)}%",
                 )
                 next_log = now + SPREAD_LOG_INTERVAL_SECONDS
-            await asyncio.sleep(SPREAD_POLL_INTERVAL_SECONDS)
+            await asyncio.sleep(POLL_INTERVAL_SEC)
 
     async def _verify_flat(self, services: list[LighterService], symbol: str) -> None:
         positions = await asyncio.gather(*(service.signed_position(symbol) for service in services))
@@ -633,11 +703,12 @@ class Controller:
         for target in leader_targets if validate_maker else []:
             if target.target_base < meta.min_base_amount:
                 raise RuntimeError(
-                    f"Leader target {target.target_base} is below min base {meta.min_base_amount}"
+                    f"Leader target {fmt_number(target.target_base)} is below "
+                    f"min base {fmt_number(meta.min_base_amount)}"
                 )
             if target.target_base * book.mid < meta.min_quote_amount:
                 raise RuntimeError(
-                    f"Leader target quote is below ${meta.min_quote_amount}"
+                    f"Leader target quote is below ${fmt_number(meta.min_quote_amount)}"
                 )
 
         leader_total = sum((target.target_base for target in leader_targets), Decimal(0))
@@ -701,12 +772,17 @@ class Controller:
         for (target, side), position in zip(targets, positions):
             expected = target.target_base if side == "long" else -target.target_base
             if abs(position - expected) >= one_unit:
-                mismatches.append(f"{target.service.label()}={position}/{expected}")
+                mismatches.append(
+                    f"{target.service.label()}="
+                    f"{fmt_number(position)}/{fmt_number(expected)}"
+                )
         if mismatches:
             raise RuntimeError(f"Per-wallet open mismatch: {', '.join(mismatches)}")
         net = sum(positions, Decimal(0))
         if abs(net) >= one_unit:
-            raise RuntimeError(f"Post-fill net exposure is {net} {meta.symbol}")
+            raise RuntimeError(
+                f"Post-fill net exposure is {fmt_number(net)} {meta.symbol}"
+            )
         ok("Дельта нейтральна", f"LONG = SHORT | {meta.symbol}")
         return positions
 
@@ -719,7 +795,8 @@ class Controller:
     ) -> None:
         lines = [
             f"📂 ПОЗИЦИИ ОТКРЫТЫ | Цикл {cycle_index}",
-            f"📊 {meta.symbol}/USDG | Спред: {book.spread_percent:.4f}% | Цена: ${book.mid:.2f}",
+            f"📊 {meta.symbol}/USDG | Спред: {fmt_number(book.spread_percent)}% | "
+            f"Цена: ${fmt_number(book.mid)}",
             "",
         ]
         long_total = Decimal(0)
@@ -734,10 +811,14 @@ class Controller:
             marker = "🟢" if item.side == "long" else "🔴"
             lines.append(
                 f"{marker} {item.side.upper()} {_tg_service_label(item.service)} | "
-                f"${notional:.2f} | {item.leverage:.1f}x"
+                f"${fmt_number(notional)} | {fmt_number(item.leverage)}x"
             )
         lines.extend(
-            ["", f"🟢 LONG: ${long_total:.2f} | 🔴 SHORT: ${short_total:.2f}"]
+            [
+                "",
+                f"🟢 LONG: ${fmt_number(long_total)} | "
+                f"🔴 SHORT: ${fmt_number(short_total)}",
+            ]
         )
         await send_tg("\n".join(lines))
 
@@ -758,8 +839,9 @@ class Controller:
             marker = "🟢" if item.side == "long" else "🔴"
             lines.append(
                 f"{marker} {item.side.upper()} {_tg_service_label(item.service)} | "
-                f"PnL: {pnl:+.4f}$ | Bal: ${balance:.4f} | "
-                f"Объём: ${item.notional * Decimal(2):.2f}"
+                f"PnL: {fmt_number(pnl, signed=True)}$ | "
+                f"Bal: ${fmt_number(balance)} | "
+                f"Объём: ${fmt_number(item.notional * Decimal(2))}"
             )
         cost_per_100k = (
             -total_pnl / estimated_volume * Decimal(100_000)
@@ -769,9 +851,9 @@ class Controller:
         lines.extend(
             [
                 "",
-                f"📊 PnL цикла: {total_pnl:+.4f}$",
-                f"💰 Объём цикла: ${estimated_volume:.2f}",
-                f"Cost / 100k: ${cost_per_100k:.3f}",
+                f"📊 PnL цикла: {fmt_number(total_pnl, signed=True)}$",
+                f"💰 Объём цикла: ${fmt_number(estimated_volume)}",
+                f"Cost / 100k: ${fmt_number(cost_per_100k)}",
             ]
         )
         await send_tg("\n".join(lines))
@@ -820,11 +902,7 @@ class Controller:
             preferred_source_side = None
             if group[0] == group[1]:
                 preferred_source_side = random.choice(["long", "short"])
-            leverage_config = TOKEN_LEVERAGE.get(symbol) or TOKEN_LEVERAGE["ETH"]
-            leverage_bounds = [
-                leverage_config[0],
-                min(Decimal(str(leverage_config[1])), meta.max_leverage),
-            ]
+            leverage_bounds = list(TOKEN_LEVERAGE[symbol])
             maker_min_notional = max(
                 meta.min_quote_amount,
                 meta.min_base_amount * book.mid,
@@ -848,11 +926,17 @@ class Controller:
                 validate_maker=EXECUTION_MODE == "leader-follower",
             )
             target_base = sum((target.target_base for target in leader_targets), Decimal(0))
-            ok("Размер", f"LONG=${target_base * book.mid:.2f} | SHORT=${target_base * book.mid:.2f}")
+            target_notional = target_base * book.mid
+            ok(
+                "Размер",
+                f"LONG=${fmt_number(target_notional)} | "
+                f"SHORT=${fmt_number(target_notional)}",
+            )
             for item in allocations:
                 plain(
                     item.service.label(),
-                    f"{item.side.upper()} | ${item.notional:.2f} | {item.leverage:.1f}x",
+                    f"{item.side.upper()} | ${fmt_number(item.notional)} | "
+                    f"{fmt_number(item.leverage)}x",
                 )
 
             await asyncio.gather(*(service.cancel_all_orders(meta) for service in selected))
@@ -894,7 +978,7 @@ class Controller:
             if all(float(value) == 0 for value in HOLD_MINUTES):
                 step("Удержание", "до запуска режима 2")
                 while not is_trading_halted():
-                    await asyncio.sleep(RUNTIME_POLL_INTERVAL_SECONDS)
+                    await asyncio.sleep(POLL_INTERVAL_SEC)
                 step("Удержание завершено", "получен сигнал режима 2")
                 return False
 
@@ -907,7 +991,7 @@ class Controller:
                     return False
                 await asyncio.sleep(
                     min(
-                        RUNTIME_POLL_INTERVAL_SECONDS,
+                        POLL_INTERVAL_SEC,
                         max(0.1, deadline - asyncio.get_running_loop().time()),
                     )
                 )
@@ -938,8 +1022,13 @@ class Controller:
         services = await self._services(require_trading=True)
         completed = 0
         failures = 0
-        await send_tg(f"▶️ БОТ ЗАПУЩЕН | {len(services)} кошельков | Дельта-нейтральный режим")
         try:
+            validate_group_wallet_count(len(services))
+            await self._stagger_trading_wallets(services)
+            await send_tg(
+                f"▶️ БОТ ЗАПУЩЕН | {len(services)} кошельков | "
+                "Дельта-нейтральный режим"
+            )
             while completed < TRADES_COUNT and failures < RETRY:
                 if is_trading_halted():
                     break
@@ -958,11 +1047,12 @@ class Controller:
                     )
                     if failures >= RETRY:
                         raise
-                    await asyncio.sleep(RUNTIME_POLL_INTERVAL_SECONDS)
+                    await asyncio.sleep(POLL_INTERVAL_SEC)
                 if completed < TRADES_COUNT and not is_trading_halted():
                     delay = pick_range(DELAY_BETWEEN_TRADES)
-                    step("Пауза", f"{delay:.0f}s до следующего цикла")
-                    await asyncio.sleep(delay)
+                    if delay > 0:
+                        step("Пауза", f"{fmt_number(delay)}s до следующего цикла")
+                        await asyncio.sleep(delay)
         finally:
             await send_tg(
                 f"⏹ БОТ ОСТАНОВЛЕН | циклов {completed}/{TRADES_COUNT}"

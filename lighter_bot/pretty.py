@@ -3,12 +3,14 @@ from __future__ import annotations
 import os
 import re
 from datetime import datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 USE_COLOR = os.environ.get("NO_COLOR", "").lower() not in ("1", "true", "yes")
 PRIVATE_HEX_RE = re.compile(r"\b(?:0x)?[0-9a-fA-F]{64}\b")
 EVM_ADDRESS_RE = re.compile(r"\b0x[0-9a-fA-F]{40}\b")
 PROXY_AUTH_RE = re.compile(r"(https?://)[^/\s:@]+:[^@\s/]+@", re.IGNORECASE)
+DECIMAL_RE = re.compile(r"(?<![\w.])([+-]?\d+)([.,])(\d+)(?![\w.])")
 
 
 class C:
@@ -32,11 +34,48 @@ def paint(text: Any, color: str = "") -> str:
     return f"{color}{text}{C.RESET}"
 
 
+def fmt_number(
+    value: Any,
+    *,
+    signed: bool = False,
+    decimal_separator: str = ".",
+) -> str:
+    try:
+        number = Decimal(str(value).replace(",", "."))
+        rounded = number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError):
+        return str(value)
+
+    if rounded == 0:
+        return "0"
+    result = f"{rounded:.2f}".rstrip("0").rstrip(".")
+    if signed and rounded > 0:
+        result = f"+{result}"
+    if decimal_separator != ".":
+        result = result.replace(".", decimal_separator)
+    return result
+
+
+def format_user_text(value: Any) -> str:
+    text = str(value)
+
+    def replace_decimal(match: re.Match[str]) -> str:
+        raw = "".join(match.groups())
+        return fmt_number(
+            raw,
+            signed=raw.startswith("+"),
+            decimal_separator=match.group(2),
+        )
+
+    return DECIMAL_RE.sub(replace_decimal, text)
+
+
 def redact(value: Any) -> str:
     text = str(value)
     text = PROXY_AUTH_RE.sub(r"\1***@", text)
     text = PRIVATE_HEX_RE.sub("<private-hex>", text)
-    return EVM_ADDRESS_RE.sub("<address>", text)
+    text = EVM_ADDRESS_RE.sub("<address>", text)
+    return format_user_text(text)
 
 
 def exception_summary(exc: BaseException, limit: int = 240) -> str:

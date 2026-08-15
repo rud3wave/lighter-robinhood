@@ -17,7 +17,7 @@ def print_menu() -> None:
     print(f"  {paint('1', C.CYAN)} = Дельта-нейтральная торговля")
     print(f"  {paint('2', C.CYAN)} = Закрыть все позиции")
     print(f"  {paint('3', C.CYAN)} = Проверить балансы")
-    print(f"  {paint('4', C.CYAN)} = Регистрация по рефке + пополнение USDG")
+    print(f"  {paint('4', C.CYAN)} = Регистрация + пополнение USDG")
     print(f"  {paint('0', C.GRAY)} = Выход")
 
 

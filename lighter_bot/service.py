@@ -13,7 +13,7 @@ from .constants import (
 from settings import SLIPPAGE
 
 from .api import BookSnapshot, LighterPublicApi, MarketMeta
-from .pretty import info, skip, wallet_prefix
+from .pretty import fmt_number, info, skip, wallet_prefix
 from .utils import base_to_int, maker_price_to_int, now_ms, price_to_int, quantize_base
 from .wallets import WalletAccount, mask_secret
 
@@ -300,12 +300,13 @@ class LighterService:
         client_order_index = (now_ms() * 1000 + random.randrange(1000)) % MAX_CLIENT_ORDER_INDEX
         action = "LONG" if is_buy else "SHORT"
         approx_usd = submitted_base * book.mid
-        base_text = f"{submitted_base:.{meta.size_decimals}f}".rstrip("0").rstrip(".")
-        price_text = f"{submitted_price:.{meta.price_decimals}f}".replace(".", ",")
+        base_text = fmt_number(submitted_base)
+        price_text = fmt_number(submitted_price, decimal_separator=",")
         order_label = f"{mask_secret(self.wallet.address)} {action}"
         info(
             order_label,
-            f"${approx_usd:.2f} | {base_text} {meta.symbol} | ENTRY {price_text}",
+            f"${fmt_number(approx_usd)} | {base_text} {meta.symbol} | "
+            f"ENTRY {price_text}",
         )
         if not self.wallet.can_trade:
             skip(self.label(), "API key не настроен")
@@ -358,11 +359,12 @@ class LighterService:
         client_order_index = (now_ms() * 1000 + random.randrange(1000)) % MAX_CLIENT_ORDER_INDEX
         action = "LONG" if is_buy else "SHORT"
         notional = base_amount * price
-        base_text = f"{base_amount:.{meta.size_decimals}f}".rstrip("0").rstrip(".")
-        price_text = f"{price:.{meta.price_decimals}f}".replace(".", ",")
+        base_text = fmt_number(base_amount)
+        price_text = fmt_number(price, decimal_separator=",")
         info(
             f"{self.label()} {action}",
-            f"${notional:.2f} | {base_text} {meta.symbol} | ENTRY {price_text} | LIMIT",
+            f"${fmt_number(notional)} | {base_text} {meta.symbol} | "
+            f"ENTRY {price_text} | LIMIT",
         )
         if not self.wallet.can_trade:
             skip(self.label(), "API key не настроен")
@@ -404,7 +406,7 @@ class LighterService:
 
     @staticmethod
     def proxy_text(wallet: WalletAccount) -> str:
-        return " proxy=isolated" if wallet.proxy_url else " no-proxy"
+        return " proxy=pool" if wallet.proxy_url else " no-proxy"
 
     @staticmethod
     def _ensure_ok(resp, err: str | None, action: str) -> None:

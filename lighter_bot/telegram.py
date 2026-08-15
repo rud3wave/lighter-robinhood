@@ -8,11 +8,12 @@ import urllib.request
 from settings import RETRY
 
 from .global_config import load_global_config
-from .pretty import warn
+from .pretty import format_user_text, warn
 
 
 def _send(message: str) -> None:
     config = load_global_config().telegram
+    message = format_user_text(message)
     url = f"https://api.telegram.org/bot{config.token}/sendMessage"
     body = json.dumps(
         {
@@ -34,6 +35,7 @@ def _send(message: str) -> None:
 
 
 async def send_tg(message: str) -> bool:
+    message = format_user_text(message)
     config = load_global_config().telegram
     if not config.enabled:
         return False

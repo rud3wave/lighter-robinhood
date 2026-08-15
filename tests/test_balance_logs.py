@@ -47,8 +47,8 @@ class BalanceLogTests(unittest.IsolatedAsyncioTestCase):
 
         console = output.getvalue()
         self.assertIn(
-            "0x6874...4da5 | available=$0.2982 | collateral=$9.8992 | "
-            "position=0.0497 ETH",
+            "0x6874...4da5 | available=$0.3 | collateral=$9.9 | "
+            "position=0.05 ETH",
             console,
         )
         self.assertNotIn("INFO 0x6874...4da5", console)
@@ -56,7 +56,7 @@ class BalanceLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("reward_point_multiplier", console)
 
         telegram_message = telegram.await_args.args[0]
-        self.assertIn("0x6874...4da5 | $0.2982 | 0.0497 ETH", telegram_message)
+        self.assertIn("0x6874...4da5 | $0.3 | 0.05 ETH", telegram_message)
         self.assertNotIn("sign=", telegram_message)
 
 

@@ -13,6 +13,7 @@ from settings import (
     MAKER_REQUOTE_THRESHOLD_PERCENT,
     MAX_HEDGE_RETRIES,
     MAX_MAKER_WAIT_SEC,
+    POLL_INTERVAL_SEC,
 )
 
 from .api import BookSnapshot, MarketMeta
@@ -21,9 +22,10 @@ from .pretty import error, info, ok, step, warn
 
 
 PositionSide = Literal["long", "short"]
-HEDGE_POLL_INTERVAL_SECONDS = HEDGE_POLL_INTERVAL_MS / 1000
-MAKER_REQUOTE_INTERVAL_SECONDS = MAKER_REQUOTE_INTERVAL_SEC
-MAX_MAKER_WAIT_SECONDS = MAX_MAKER_WAIT_SEC
+
+
+def _hedge_poll_seconds() -> float:
+    return float(HEDGE_POLL_INTERVAL_MS) / 1000
 
 
 @dataclass(frozen=True)
@@ -283,7 +285,9 @@ async def execute_paired(
 
             deadline = time.monotonic() + HEDGE_SETTLE_SECONDS
             while time.monotonic() < deadline:
-                await asyncio.sleep(min(HEDGE_POLL_INTERVAL_SECONDS, max(0, deadline - time.monotonic())))
+                await asyncio.sleep(
+                    min(_hedge_poll_seconds(), max(0, deadline - time.monotonic()))
+                )
                 progress = await read_follower_progress()
                 if all(actual >= desired for actual, desired in zip(progress, follower_desired)):
                     return
@@ -349,8 +353,8 @@ async def execute_paired(
         await cancel_maker_orders()
         maker_progress = Decimal(0)
         while maker_progress < maker_total:
-            if time.monotonic() - started_at > MAX_MAKER_WAIT_SECONDS:
-                raise RuntimeError(f"Leader phase timed out after {MAX_MAKER_WAIT_SECONDS}s")
+            if time.monotonic() - started_at > MAX_MAKER_WAIT_SEC:
+                raise RuntimeError(f"Leader phase timed out after {MAX_MAKER_WAIT_SEC}s")
 
             progress = await read_maker_progress()
             maker_progress = sum(progress, Decimal(0))
@@ -362,10 +366,10 @@ async def execute_paired(
 
             if not maker_orders:
                 await place_maker_remaining(progress)
-                await asyncio.sleep(HEDGE_POLL_INTERVAL_SECONDS)
+                await asyncio.sleep(_hedge_poll_seconds())
                 continue
 
-            await asyncio.sleep(HEDGE_POLL_INTERVAL_SECONDS)
+            await asyncio.sleep(_hedge_poll_seconds())
             progress = await read_maker_progress()
             next_progress = sum(progress, Decimal(0))
             if next_progress > maker_progress:
@@ -378,7 +382,7 @@ async def execute_paired(
             if maker_progress >= maker_total:
                 break
 
-            if time.monotonic() - quote_started < MAKER_REQUOTE_INTERVAL_SECONDS:
+            if time.monotonic() - quote_started < MAKER_REQUOTE_INTERVAL_SEC:
                 continue
 
             active = await asyncio.gather(
@@ -463,7 +467,7 @@ async def flatten_positions(services: list[Any], meta: MarketMeta) -> None:
         for service, result in zip(residuals, results):
             if isinstance(result, BaseException):
                 error(service.label(), f"остаток не закрыт: {result}")
-        await asyncio.sleep(1)
+        await asyncio.sleep(POLL_INTERVAL_SEC)
 
     positions = await asyncio.gather(
         *(service.signed_position(meta.symbol) for service in services),

@@ -19,10 +19,7 @@ from .constants import (
     API_BASE_URL,
     DEFAULT_API_KEY_INDEX,
 )
-from settings import (
-    SHUFFLE_WALLETS,
-    STRICT_PROXY_ISOLATION,
-)
+from settings import SHUFFLE_WALLETS
 
 from .pretty import error, exception_summary, plain, section, warn, wallet_prefix
 from .vault import DEFAULT_PASSWORD, LINE_PREFIX, open_line, open_text, protect_lines_atomic, seal_text, vault_password
@@ -137,10 +134,6 @@ def check_proxy(proxy_url: str, timeout: int = 12) -> bool:
 def check_proxies_health(proxies: list[str]) -> list[str]:
     unique = list(dict.fromkeys([proxy for proxy in proxies if proxy]))
     if not unique:
-        if STRICT_PROXY_ISOLATION:
-            raise RuntimeError(
-                "STRICT_PROXY_ISOLATION requires one proxy for every wallet"
-            )
         warn("Прокси не указаны", "кошельки используют текущий IP")
         return []
     section("Прокси", str(len(unique)))
@@ -154,11 +147,7 @@ def check_proxies_health(proxies: list[str]) -> list[str]:
             alive.append(proxy)
             plain(label, "подключен")
         else:
-            error(label, "не отвечает")
-    if STRICT_PROXY_ISOLATION and len(alive) != len(unique):
-        raise RuntimeError(
-            "Strict proxy isolation stopped the run because one or more proxies failed"
-        )
+            warn(label, "не отвечает; пропущен")
     if not alive:
         warn("Прокси недоступны", "кошельки используют текущий IP")
     return alive
@@ -261,15 +250,6 @@ def load_wallets_db() -> list[WalletAccount] | None:
 def load_wallets_from_privatekeys() -> list[WalletAccount]:
     raw_keys = read_private_keys()
     configured_proxies = read_proxies()
-    if STRICT_PROXY_ISOLATION:
-        if len(configured_proxies) != len(raw_keys):
-            raise RuntimeError(
-                "STRICT_PROXY_ISOLATION requires exactly one proxy per private key"
-            )
-        if len(set(configured_proxies)) != len(configured_proxies):
-            raise RuntimeError(
-                "STRICT_PROXY_ISOLATION requires a unique proxy for every private key"
-            )
     proxies = check_proxies_health(configured_proxies)
     wallets: list[WalletAccount] = []
     for index, raw_key in enumerate(raw_keys):
@@ -297,7 +277,6 @@ def init_wallets() -> list[WalletAccount]:
                 wallet.account_index = old.account_index
                 wallet.api_key_index = old.api_key_index
                 wallet.api_private_key = old.api_private_key
-                wallet.proxy_url = old.proxy_url or wallet.proxy_url
     save_wallets(current)
     section("Кошельки", str(len(current)))
     for wallet in current:

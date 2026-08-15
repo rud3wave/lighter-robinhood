@@ -225,7 +225,7 @@ class ServiceContractTests(unittest.IsolatedAsyncioTestCase):
 
         line = output.getvalue()
         self.assertIn(
-            "0xaFBc...1405 SHORT | $13.69 | 0.0073 ETH | ENTRY 1874,78",
+            "0xaFBc...1405 SHORT | $13.69 | 0.01 ETH | ENTRY 1874,78",
             line,
         )
         self.assertNotIn("wallet[4]", line)
@@ -258,7 +258,7 @@ class ServiceContractTests(unittest.IsolatedAsyncioTestCase):
 
         line = output.getvalue()
         self.assertIn(
-            "0xaFBc...1405 SHORT | $13.69 | 0.0073 ETH | ENTRY 1875,17 | LIMIT",
+            "0xaFBc...1405 SHORT | $13.69 | 0.01 ETH | ENTRY 1875,17 | LIMIT",
             line,
         )
         self.assertNotIn("wallet[4]", line)
@@ -296,16 +296,18 @@ class PairedExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.originals = {
             "EXECUTION_MODE": paired_execution.EXECUTION_MODE,
-            "HEDGE_POLL_INTERVAL_SECONDS": paired_execution.HEDGE_POLL_INTERVAL_SECONDS,
+            "HEDGE_POLL_INTERVAL_MS": paired_execution.HEDGE_POLL_INTERVAL_MS,
             "HEDGE_SETTLE_SECONDS": paired_execution.HEDGE_SETTLE_SECONDS,
-            "MAKER_REQUOTE_INTERVAL_SECONDS": paired_execution.MAKER_REQUOTE_INTERVAL_SECONDS,
-            "MAX_MAKER_WAIT_SECONDS": paired_execution.MAX_MAKER_WAIT_SECONDS,
+            "MAKER_REQUOTE_INTERVAL_SEC": paired_execution.MAKER_REQUOTE_INTERVAL_SEC,
+            "MAX_MAKER_WAIT_SEC": paired_execution.MAX_MAKER_WAIT_SEC,
+            "POLL_INTERVAL_SEC": paired_execution.POLL_INTERVAL_SEC,
         }
         paired_execution.EXECUTION_MODE = "leader-follower"
-        paired_execution.HEDGE_POLL_INTERVAL_SECONDS = 0.001
+        paired_execution.HEDGE_POLL_INTERVAL_MS = 1
         paired_execution.HEDGE_SETTLE_SECONDS = 0.003
-        paired_execution.MAKER_REQUOTE_INTERVAL_SECONDS = 0.01
-        paired_execution.MAX_MAKER_WAIT_SECONDS = 0.2
+        paired_execution.MAKER_REQUOTE_INTERVAL_SEC = 0.01
+        paired_execution.MAX_MAKER_WAIT_SEC = 0.2
+        paired_execution.POLL_INTERVAL_SEC = 0.001
 
     async def asyncTearDown(self) -> None:
         for name, value in self.originals.items():
@@ -376,7 +378,7 @@ class PairedExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_timeout_always_cancels_maker(self) -> None:
         maker = FakeService("maker")
         follower = FakeService("follower")
-        paired_execution.MAX_MAKER_WAIT_SECONDS = 0.025
+        paired_execution.MAX_MAKER_WAIT_SEC = 0.025
         with self.assertRaisesRegex(RuntimeError, "timed out"):
             await execute_paired(
                 META,
