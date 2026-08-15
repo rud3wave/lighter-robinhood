@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import tempfile
+import io
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -18,13 +20,16 @@ class OneShotMainTests(unittest.IsolatedAsyncioTestCase):
         self.controller.deposit_from_wallets = AsyncMock()
         self.controller.withdraw_to_wallets = AsyncMock()
 
-    async def _run(self, choice: str) -> None:
+    async def _run(self, choice: str, *next_choices: str) -> None:
         with (
             patch.object(app_main, "Controller", return_value=self.controller),
             patch.object(app_main, "banner"),
             patch.object(app_main, "info"),
             patch.object(app_main, "error"),
-            patch("builtins.input", side_effect=[choice, AssertionError("menu repeated")]),
+            patch(
+                "builtins.input",
+                side_effect=[choice, *next_choices, AssertionError("menu repeated")],
+            ),
         ):
             await app_main.main()
 
@@ -36,9 +41,24 @@ class OneShotMainTests(unittest.IsolatedAsyncioTestCase):
         await self._run("4")
         self.controller.deposit_from_wallets.assert_awaited_once()
 
-    async def test_withdraw_mode_runs_once_and_exits(self) -> None:
-        await self._run("5")
-        self.controller.withdraw_to_wallets.assert_awaited_once()
+    async def test_fast_withdraw_mode_runs_once_and_exits(self) -> None:
+        await self._run("5", "1")
+        self.controller.withdraw_to_wallets.assert_awaited_once_with("fast")
+
+    async def test_secure_withdraw_mode_runs_once_and_exits(self) -> None:
+        await self._run("5", "2")
+        self.controller.withdraw_to_wallets.assert_awaited_once_with("secure")
+
+    async def test_withdraw_method_menu_can_exit(self) -> None:
+        await self._run("5", "0")
+        self.controller.withdraw_to_wallets.assert_not_awaited()
+
+    def test_secure_menu_explains_the_second_run(self) -> None:
+        output = io.StringIO()
+        with patch("builtins.input", return_value="2"), redirect_stdout(output):
+            method = app_main.choose_withdraw_method()
+        self.assertEqual(method, "secure")
+        self.assertIn("потом повторить режим", output.getvalue())
 
     async def test_close_mode_requests_halt_runs_once_and_exits(self) -> None:
         with patch.object(app_main, "request_trading_halt") as request_halt:

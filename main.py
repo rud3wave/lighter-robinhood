@@ -22,6 +22,22 @@ def print_menu() -> None:
     print(f"  {paint('0', C.GRAY)} = Выход")
 
 
+def choose_withdraw_method() -> str | None:
+    print()
+    print(paint("Выбери способ вывода:", C.BOLD + C.WHITE))
+    print(f"  {paint('1', C.CYAN)} = Fast   - 15-20 сек, возможна комиссия")
+    print(f"  {paint('2', C.CYAN)} = Secure - около часа, потом повторить режим")
+    print(f"  {paint('0', C.GRAY)} = Выход")
+    choice = input(paint("> ", C.BOLD + C.CYAN)).strip()
+    if choice == "1":
+        return "fast"
+    if choice == "2":
+        return "secure"
+    if choice == "0":
+        return None
+    raise RuntimeError(f'Неизвестный способ вывода: "{choice}"')
+
+
 def print_stopped() -> None:
     print()
     info("Завершено", "процесс остановлен пользователем")
@@ -47,7 +63,10 @@ async def main() -> None:
         elif choice == "4":
             await controller.deposit_from_wallets()
         elif choice == "5":
-            await controller.withdraw_to_wallets()
+            withdraw_method = choose_withdraw_method()
+            if withdraw_method is None:
+                return
+            await controller.withdraw_to_wallets(withdraw_method)
         elif choice == "0":
             return
         else:

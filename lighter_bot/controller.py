@@ -445,7 +445,9 @@ class Controller:
         finally:
             await asyncio.gather(*(svc.close() for svc in services), return_exceptions=True)
 
-    async def withdraw_to_wallets(self) -> None:
+    async def withdraw_to_wallets(self, method: str) -> None:
+        if method not in {"fast", "secure"}:
+            raise RuntimeError("неизвестный способ вывода")
         wallets = self._load_wallets()
         if not wallets:
             raise RuntimeError("No wallets loaded from input_data/privatekeys.txt")
@@ -500,31 +502,40 @@ class Controller:
             for wallet in wallets
         ]
         try:
-            try:
-                delay_seconds = await withdrawal_delay_seconds(
-                    services[0].wallet.proxy_url
-                )
-            except Exception:
-                delay_seconds = 0
+            delay_seconds = 0
+            if method == "secure":
+                try:
+                    delay_seconds = await withdrawal_delay_seconds(
+                        services[0].wallet.proxy_url
+                    )
+                except Exception:
+                    delay_seconds = 0
             delay_minutes = max(1, math.ceil(delay_seconds / 60)) if delay_seconds else 0
-            hint = (
-                f"{len(services)} кошельков | зачисление примерно {delay_minutes} мин"
-                if delay_minutes
-                else f"{len(services)} кошельков"
-            )
+            method_label = "быстрый" if method == "fast" else "защищённый"
+            if method == "fast":
+                hint = f"{method_label} | {len(services)} кошельков | обычно 15-20 сек"
+            elif delay_minutes:
+                hint = (
+                    f"{method_label} | {len(services)} кошельков | "
+                    f"примерно {delay_minutes} мин"
+                )
+            else:
+                hint = f"{method_label} | {len(services)} кошельков"
             section(f"Вывод {DEPOSIT_TOKEN_SYMBOL}", hint)
 
             async def withdraw_one(
                 service: LighterService,
             ) -> tuple[ClaimResult, WithdrawalResult, list[str]]:
                 failures = []
-                try:
-                    claim = await claim_pending_usdg(service)
-                except Exception as exc:
-                    detail = f"получение: {exception_summary(exc)}"
-                    error(service.label(), detail)
-                    claim = ClaimResult(detail=detail)
-                    failures.append(detail)
+                claim = ClaimResult()
+                if method == "secure":
+                    try:
+                        claim = await claim_pending_usdg(service)
+                    except Exception as exc:
+                        detail = f"получение: {exception_summary(exc)}"
+                        error(service.label(), detail)
+                        claim = ClaimResult(detail=detail)
+                        failures.append(detail)
 
                 try:
                     amount = (
@@ -532,7 +543,11 @@ class Controller:
                         if WITHDRAW_ALL
                         else pick_withdrawal_amount(WITHDRAW_AMOUNT)
                     )
-                    result = await withdraw_usdg(service, amount)
+                    result = await withdraw_usdg(
+                        service,
+                        amount,
+                        method=method,
+                    )
                 except Exception as exc:
                     detail = f"запрос: {exception_summary(exc)}"
                     error(service.label(), detail)
@@ -546,19 +561,37 @@ class Controller:
             sent = [result for _, result, _ in results if result.sent]
             claimed = [claim for claim, _, _ in results if claim.claimed]
             total = sum((result.amount for result in sent), Decimal(0))
-            claimed_total = sum((result.amount for result in claimed), Decimal(0))
+            total_fees = sum((result.fee for result in sent), Decimal(0))
+            claimed_total = sum((claim.amount for claim in claimed), Decimal(0))
             failures_count = sum(bool(failures) for _, _, failures in results)
-            summary = (
-                f"получено {fmt_number(claimed_total)} | "
-                f"запрошено {fmt_number(total)} {DEPOSIT_TOKEN_SYMBOL}"
-            )
+            if method == "fast":
+                summary = (
+                    f"выведено {fmt_number(total)} {DEPOSIT_TOKEN_SYMBOL} | "
+                    f"комиссии {fmt_number(total_fees)}"
+                )
+            else:
+                summary = (
+                    f"получено {fmt_number(claimed_total)} | "
+                    f"запрошено {fmt_number(total)} {DEPOSIT_TOKEN_SYMBOL}"
+                )
             if failures_count == 0:
                 ok("Вывод завершён", summary)
             else:
                 warn("Выводы завершены", summary)
+            if method == "secure" and sent:
+                wait_hint = (
+                    f"примерно через {delay_minutes} мин"
+                    if delay_minutes
+                    else "после защитной задержки"
+                )
+                info(
+                    "Следующий шаг",
+                    f"{wait_hint} снова выбери режим 5 -> Secure для получения USDG",
+                )
 
             lines = [
-                f"💸 ВЫВОД {DEPOSIT_TOKEN_SYMBOL} | {len(services)} кошельков",
+                f"💸 ВЫВОД {DEPOSIT_TOKEN_SYMBOL} | {method_label.upper()} | "
+                f"{len(services)} кошельков",
                 "",
             ]
             for service, (claim, result, failures) in zip(services, results):
@@ -567,7 +600,10 @@ class Controller:
                 if claim.claimed:
                     actions.append(f"получено {fmt_number(claim.amount)}")
                 if result.sent:
-                    actions.append(f"запрошено {fmt_number(result.amount)}")
+                    action = "выведено" if method == "fast" else "запрошено"
+                    actions.append(f"{action} {fmt_number(result.amount)}")
+                    if result.fee:
+                        actions.append(f"комиссия {fmt_number(result.fee)}")
                 if failures:
                     marker = "⚠️" if actions else "❌"
                     details = [*actions, *failures]
@@ -583,13 +619,31 @@ class Controller:
                 [
                     "",
                     f"Заявки: {len(sent)}/{len(services)}",
-                    f"Запрошено: {fmt_number(total)} {DEPOSIT_TOKEN_SYMBOL}",
-                    f"Получено: {fmt_number(claimed_total)} {DEPOSIT_TOKEN_SYMBOL}",
                 ]
             )
-            if delay_minutes:
+            if method == "fast":
+                lines.extend(
+                    [
+                        f"Выведено: {fmt_number(total)} {DEPOSIT_TOKEN_SYMBOL}",
+                        f"Комиссии: {fmt_number(total_fees)} {DEPOSIT_TOKEN_SYMBOL}",
+                    ]
+                )
+            else:
+                lines.extend(
+                    [
+                        f"Запрошено: {fmt_number(total)} {DEPOSIT_TOKEN_SYMBOL}",
+                        f"Получено: {fmt_number(claimed_total)} {DEPOSIT_TOKEN_SYMBOL}",
+                    ]
+                )
+            if method == "secure" and sent:
+                wait_hint = (
+                    f"примерно через {delay_minutes} мин"
+                    if delay_minutes
+                    else "после защитной задержки"
+                )
                 lines.append(
-                    f"Повтори режим 5 примерно через {delay_minutes} мин для получения"
+                    f"Следующий шаг: {wait_hint} снова выбери режим 5 -> Secure "
+                    f"для получения {DEPOSIT_TOKEN_SYMBOL}"
                 )
             await send_tg("\n".join(lines))
         finally:
