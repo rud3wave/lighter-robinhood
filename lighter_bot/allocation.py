@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from typing import Any, Literal
 
 
@@ -18,24 +18,15 @@ class Allocation:
     notional: Decimal
 
 
-def _random_decimal(bounds: list[int | float]) -> Decimal:
-    low, high = bounds
-    if low == high:
-        return Decimal(str(low))
-    return Decimal(str(random.uniform(float(low), float(high))))
-
-
 def _leverage_bounds(bounds: list[int | float]) -> tuple[Decimal, Decimal]:
     low, high = sorted(Decimal(str(value)) for value in bounds)
     return max(Decimal(1), low), max(Decimal(1), high)
 
 
-def _random_leverage(bounds: tuple[Decimal, Decimal]) -> Decimal:
-    low, high = bounds
+def _random_between(low: Decimal, high: Decimal) -> Decimal:
     if low == high:
-        return low.quantize(Decimal("0.1"))
-    value = Decimal(str(random.uniform(float(low), float(high))))
-    return value.quantize(Decimal("0.1"))
+        return low
+    return low + (high - low) * Decimal(str(random.random()))
 
 
 def _bounded_allocate(
@@ -67,6 +58,83 @@ def _bounded_allocate(
     return parts if abs(remaining) < Decimal("0.00000001") else None
 
 
+def _notional_bounds(
+    accounts: list[tuple[Any, Decimal]],
+    min_percent: Decimal,
+    max_percent: Decimal,
+    min_leverage: Decimal,
+    max_leverage: Decimal,
+    minimum_notional: Decimal,
+) -> tuple[list[Decimal], list[Decimal]]:
+    minimums = [
+        max(
+            minimum_notional,
+            balance * min_percent / Decimal(100) * min_leverage,
+        )
+        for _, balance in accounts
+    ]
+    maximums = [
+        balance * max_percent / Decimal(100) * max_leverage
+        for _, balance in accounts
+    ]
+    return minimums, maximums
+
+
+def _pick_leverage(
+    notional: Decimal,
+    balance: Decimal,
+    min_percent: Decimal,
+    max_percent: Decimal,
+    min_leverage: Decimal,
+    max_leverage: Decimal,
+) -> Decimal:
+    leverage_low = max(
+        min_leverage,
+        notional / (balance * max_percent / Decimal(100)),
+    )
+    leverage_high = min(
+        max_leverage,
+        notional / (balance * min_percent / Decimal(100)),
+    )
+    low_tick = int(
+        (leverage_low * Decimal(10)).to_integral_value(rounding=ROUND_CEILING)
+    )
+    high_tick = int(
+        (leverage_high * Decimal(10)).to_integral_value(rounding=ROUND_FLOOR)
+    )
+    if low_tick > high_tick:
+        raise RuntimeError("Не удалось подобрать плечо с шагом 0.1x")
+    return Decimal(random.randint(low_tick, high_tick)) / Decimal(10)
+
+
+def _build_side(
+    accounts: list[tuple[Any, Decimal]],
+    side: PositionSide,
+    parts: list[Decimal],
+    min_percent: Decimal,
+    max_percent: Decimal,
+    min_leverage: Decimal,
+    max_leverage: Decimal,
+) -> list[Allocation]:
+    return [
+        Allocation(
+            service=service,
+            balance=balance,
+            side=side,
+            leverage=_pick_leverage(
+                notional,
+                balance,
+                min_percent,
+                max_percent,
+                min_leverage,
+                max_leverage,
+            ),
+            notional=notional,
+        )
+        for (service, balance), notional in zip(accounts, parts)
+    ]
+
+
 def calculate_allocation(
     accounts: list[tuple[Any, Decimal]],
     long_count: int,
@@ -75,10 +143,11 @@ def calculate_allocation(
     maker_min_notional: Decimal,
     taker_min_notional: Decimal,
     preferred_source_side: PositionSide | None = None,
-    attempts: int = 1000,
 ) -> list[Allocation]:
     if long_count <= 0 or long_count >= len(accounts):
         raise RuntimeError("A delta-neutral group requires both long and short accounts")
+    if any(balance <= 0 for _, balance in accounts):
+        raise RuntimeError("Для торговли баланс каждого кошелька должен быть больше 0")
 
     min_leverage, max_leverage = _leverage_bounds(leverage_bounds)
     min_percent, max_percent = sorted(Decimal(str(value)) for value in percent_bounds)
@@ -95,74 +164,59 @@ def calculate_allocation(
 
     source_accounts = sorted_accounts[:source_count]
     target_accounts = sorted_accounts[source_count:]
+    source_minimums, source_maximums = _notional_bounds(
+        source_accounts,
+        min_percent,
+        max_percent,
+        min_leverage,
+        max_leverage,
+        maker_min_notional,
+    )
+    target_minimums, target_maximums = _notional_bounds(
+        target_accounts,
+        min_percent,
+        max_percent,
+        min_leverage,
+        max_leverage,
+        taker_min_notional,
+    )
 
-    for _ in range(attempts):
-        source: list[Allocation] = []
-        target_total = Decimal(0)
-        valid = True
-        for service, balance in source_accounts:
-            leverage = _random_leverage((min_leverage, max_leverage))
-            percent = _random_decimal(percent_bounds)
-            notional = balance * percent / Decimal(100) * Decimal(leverage)
-            if notional < maker_min_notional:
-                valid = False
-                break
-            source.append(Allocation(service, balance, source_side, leverage, notional))
-            target_total += notional
-        if not valid:
-            continue
-
-        minimums: list[Decimal] = []
-        maximums: list[Decimal] = []
-        for _, balance in target_accounts:
-            minimums.append(
-                max(
-                    taker_min_notional,
-                    balance * min_percent / Decimal(100) * min_leverage,
-                )
-            )
-            maximums.append(
-                balance * max_percent / Decimal(100) * max_leverage
-            )
-
-        parts = _bounded_allocate(target_total, minimums, maximums)
-        if parts is None:
-            continue
-
-        targets: list[Allocation] = []
-        for (service, balance), notional in zip(target_accounts, parts):
-            percent_low = max(
-                min_percent,
-                notional / (balance * max_leverage) * Decimal(100),
-            )
-            percent_high = min(
-                max_percent,
-                notional / (balance * min_leverage) * Decimal(100),
-            )
-            if percent_low > percent_high or percent_low <= 0:
-                valid = False
-                break
-            percent = _random_decimal([float(percent_low), float(percent_high)])
-            leverage = (notional / (balance * percent / Decimal(100))).quantize(Decimal("0.1"))
-            if leverage < min_leverage or leverage > max_leverage:
-                valid = False
-                break
-            targets.append(Allocation(service, balance, target_side, leverage, notional))
-        if not valid:
-            continue
-
-        allocations = source + targets
-        if any(item.notional / item.balance > Decimal(10) for item in allocations):
-            continue
-        long_total = sum(
-            (item.notional for item in allocations if item.side == "long"),
-            Decimal(0),
+    total_minimum = max(
+        sum(source_minimums, Decimal(0)),
+        sum(target_minimums, Decimal(0)),
+    )
+    total_maximum = min(
+        sum(source_maximums, Decimal(0)),
+        sum(target_maximums, Decimal(0)),
+    )
+    if total_minimum > total_maximum:
+        raise RuntimeError(
+            "Не получается выровнять LONG и SHORT с текущими балансами. "
+            "Измени GROUP_CONFIGS, POSITION_PERCENT или TOKEN_LEVERAGE"
         )
-        short_total = sum(
-            (item.notional for item in allocations if item.side == "short"),
-            Decimal(0),
-        )
-        if abs(long_total - short_total) <= Decimal("0.00000001"):
-            return allocations
 
-    raise RuntimeError(f"Unable to calculate balanced allocation after {attempts} attempts")
+    total = _random_between(total_minimum, total_maximum)
+    source_parts = _bounded_allocate(total, source_minimums, source_maximums)
+    target_parts = _bounded_allocate(total, target_minimums, target_maximums)
+    if source_parts is None or target_parts is None:
+        raise RuntimeError("Не удалось распределить общий объём между кошельками")
+
+    source = _build_side(
+        source_accounts,
+        source_side,
+        source_parts,
+        min_percent,
+        max_percent,
+        min_leverage,
+        max_leverage,
+    )
+    target = _build_side(
+        target_accounts,
+        target_side,
+        target_parts,
+        min_percent,
+        max_percent,
+        min_leverage,
+        max_leverage,
+    )
+    return source + target

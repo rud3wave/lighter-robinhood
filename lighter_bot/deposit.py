@@ -57,7 +57,7 @@ class DepositPlan:
     min_transfer: Decimal
 
 
-def _web3(wallet: WalletAccount) -> Web3:
+def wallet_web3(wallet: WalletAccount) -> Web3:
     kwargs = {}
     if wallet.proxy_url:
         kwargs["proxies"] = {"http": wallet.proxy_url, "https": wallet.proxy_url}
@@ -93,7 +93,7 @@ async def _intent_address(wallet: WalletAccount) -> str:
 
 
 def _prepare_deposit(wallet: WalletAccount, requested_amount: Decimal | None) -> DepositPlan:
-    w3 = _web3(wallet)
+    w3 = wallet_web3(wallet)
     if not w3.is_connected():
         raise RuntimeError(f"Robinhood RPC is not available: {ROBINHOOD_RPC_URL}")
 

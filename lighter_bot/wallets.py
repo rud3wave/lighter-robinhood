@@ -1,11 +1,12 @@
 import base64
+import hashlib
 import json
 import os
 import random
 import re
 import secrets
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.request import ProxyHandler, Request, build_opener
@@ -13,16 +14,20 @@ from urllib.request import ProxyHandler, Request, build_opener
 from Crypto.Cipher import AES
 from Crypto.Protocol.KDF import PBKDF2
 from Crypto.Hash import SHA256
+from Crypto.Random import get_random_bytes
+from Crypto.Util.Padding import pad, unpad
 from eth_account import Account
 
 from .constants import (
     API_BASE_URL,
     DEFAULT_API_KEY_INDEX,
 )
-from settings import SHUFFLE_WALLETS
+from .global_config import load_global_config
+from settings import ID_FILTER, SHUFFLE_WALLETS
 
-from .pretty import error, exception_summary, plain, section, warn, wallet_prefix
-from .vault import DEFAULT_PASSWORD, LINE_PREFIX, open_line, open_text, protect_lines_atomic, seal_text, vault_password
+from .id_filter import filter_wallets_by_id
+from .pretty import exception_summary, plain, section, warn, wallet_prefix
+from .vault import DEFAULT_PASSWORD, LINE_PREFIX, open_line, open_text, vault_password
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +52,10 @@ class WalletAccount:
     def can_trade(self) -> bool:
         return self.account_index is not None and bool(self.api_private_key)
 
+    @property
+    def wallet_id(self) -> int:
+        return self.index + 1
+
 
 def mask_secret(value: str) -> str:
     if not value:
@@ -67,38 +76,101 @@ def mask_proxy(proxy: str) -> str:
     return re.sub(r"//[^/@]+@", "//***@", proxy)
 
 
-def _read_secret_lines(path: Path, context: str) -> tuple[list[str], bool]:
+def _encryption_password() -> str:
+    return (
+        os.environ.get("LIGHTER_ENCRYPTION_PASSWORD", "").strip()
+        or load_global_config().encryption_password
+    )
+
+
+def _openssl_key_and_iv(password: str, salt: bytes) -> tuple[bytes, bytes]:
+    derived = b""
+    block = b""
+    password_bytes = password.encode("utf-8")
+    while len(derived) < 48:
+        block = hashlib.md5(block + password_bytes + salt).digest()
+        derived += block
+    return derived[:32], derived[32:48]
+
+
+def encrypt_key(plain_key: str) -> str:
+    """Match CryptoJS.AES.encrypt(text, password).toString()."""
+    salt = get_random_bytes(8)
+    key, iv = _openssl_key_and_iv(_encryption_password(), salt)
+    cipher = AES.new(key, AES.MODE_CBC, iv=iv)
+    encrypted = cipher.encrypt(pad(plain_key.encode("utf-8"), AES.block_size))
+    return base64.b64encode(b"Salted__" + salt + encrypted).decode("ascii")
+
+
+def decrypt_key(encrypted_key: str) -> str:
+    try:
+        packed = base64.b64decode(encrypted_key, validate=True)
+        if not packed.startswith(b"Salted__") or len(packed) < 32:
+            raise ValueError("invalid OpenSSL payload")
+        salt = packed[8:16]
+        key, iv = _openssl_key_and_iv(_encryption_password(), salt)
+        cipher = AES.new(key, AES.MODE_CBC, iv=iv)
+        return unpad(cipher.decrypt(packed[16:]), AES.block_size).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise RuntimeError(
+            "Decryption failed - wrong ENCRYPTION_PASSWORD?"
+        ) from exc
+
+
+def _write_plain_lines(path: Path, header: str, values: list[str]) -> None:
+    content = header + "\n"
+    if values:
+        content += "\n".join(values) + "\n"
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _read_input_lines(path: Path, context: str) -> tuple[list[str], bool]:
     if not path.exists():
         return [], False
     values: list[str] = []
-    has_plaintext = False
+    had_legacy_encryption = False
     for raw_line in path.read_text(encoding="utf-8", errors="strict").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
         if line.startswith(LINE_PREFIX):
             values.append(open_line(line, context))
+            had_legacy_encryption = True
         else:
             values.append(line)
-            has_plaintext = True
-    return values, has_plaintext
+    return values, had_legacy_encryption
 
 
 def read_private_keys() -> list[str]:
-    raw_keys, has_plaintext = _read_secret_lines(PRIVATE_KEYS_PATH, "input:privatekeys")
+    raw_keys, migrated = _read_input_lines(PRIVATE_KEYS_PATH, "input:privatekeys")
     keys = [validate_evm_private_key(key) for key in raw_keys]
     if not keys:
         raise RuntimeError(f"No private keys found in {PRIVATE_KEYS_PATH}")
-    if has_plaintext:
-        protect_lines_atomic(PRIVATE_KEYS_PATH, keys, "input:privatekeys")
+    if migrated:
+        _write_plain_lines(
+            PRIVATE_KEYS_PATH,
+            "# Приватные ключи (один на строку)",
+            keys,
+        )
     return keys
 
 
 def read_proxies() -> list[str]:
-    raw_proxies, has_plaintext = _read_secret_lines(PROXIES_PATH, "input:proxies")
+    raw_proxies, migrated = _read_input_lines(PROXIES_PATH, "input:proxies")
     proxies = [normalize_proxy(proxy) for proxy in raw_proxies]
-    if has_plaintext and proxies:
-        protect_lines_atomic(PROXIES_PATH, proxies, "input:proxies")
+    if migrated:
+        _write_plain_lines(
+            PROXIES_PATH,
+            "# Прокси (один на строку). Формат: http://user:pass@ip:port или ip:port",
+            proxies,
+        )
     return proxies
 
 
@@ -197,27 +269,64 @@ def _legacy_wallet_from_db(data: dict[str, Any]) -> WalletAccount:
     return _wallet_from_plain(plain)
 
 
-def save_wallets(wallets: list[WalletAccount]) -> None:
-    vault_password()
+def _phoenix_wallet_from_db(data: dict[str, Any]) -> WalletAccount:
+    private_key = validate_evm_private_key(decrypt_key(str(data["encryptedKey"])))
+    address = address_from_private_key(private_key)
+    stored_address = str(data.get("address") or address)
+    if stored_address.lower() != address.lower():
+        raise RuntimeError("Decrypted private key does not match the stored address")
+    encrypted_api_key = str(data.get("encryptedApiKey") or "")
+    return WalletAccount(
+        index=int(data["index"]),
+        private_key=private_key,
+        address=address,
+        proxy_url=str(data.get("proxyUrl") or ""),
+        account_index=data.get("accountIndex"),
+        api_key_index=int(data.get("apiKeyIndex") or DEFAULT_API_KEY_INDEX),
+        api_private_key=decrypt_key(encrypted_api_key) if encrypted_api_key else "",
+    )
+
+
+def save_wallets(
+    wallets: list[WalletAccount],
+    *,
+    preserve_existing: bool = False,
+) -> None:
+    if preserve_existing:
+        existing = load_wallets_db() or []
+        updates = {wallet.address.lower(): wallet for wallet in wallets}
+        merged = [
+            updates.pop(wallet.address.lower(), wallet)
+            for wallet in existing
+        ]
+        merged.extend(updates.values())
+        wallets = sorted(merged, key=lambda wallet: wallet.index)
+
     DB_DIR.mkdir(parents=True, exist_ok=True)
-    records = []
+    records: list[dict[str, Any]] = []
     for wallet in wallets:
-        record_id = secrets.token_hex(16)
-        plain = json.dumps(asdict(wallet), separators=(",", ":"), sort_keys=True)
         records.append(
             {
-                "id": record_id,
-                "payload": seal_text(plain, f"wallet-record:{record_id}"),
+                "address": wallet.address,
+                "encryptedKey": encrypt_key(wallet.private_key),
+                "proxyUrl": wallet.proxy_url,
+                "index": wallet.index,
+                "accountIndex": wallet.account_index,
+                "apiKeyIndex": wallet.api_key_index,
+                "encryptedApiKey": (
+                    encrypt_key(wallet.api_private_key)
+                    if wallet.api_private_key
+                    else ""
+                ),
             }
         )
-    document = {"version": 2, "wallets": records}
     temporary = WALLETS_DB.with_name(f".{WALLETS_DB.name}.{secrets.token_hex(6)}.tmp")
     try:
         with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-            json.dump(document, handle, indent=2)
+            json.dump(records, handle, indent=2)
             handle.write("\n")
         written = json.loads(temporary.read_text(encoding="utf-8"))
-        if written.get("version") != 2 or len(written.get("wallets", [])) != len(records):
+        if not isinstance(written, list) or len(written) != len(records):
             raise RuntimeError("Encrypted wallet DB verification failed")
         os.replace(temporary, WALLETS_DB)
     finally:
@@ -231,6 +340,8 @@ def load_wallets_db() -> list[WalletAccount] | None:
     try:
         document = json.loads(WALLETS_DB.read_text(encoding="utf-8"))
         if isinstance(document, list):
+            if all(isinstance(item, dict) and "encryptedKey" in item for item in document):
+                return [_phoenix_wallet_from_db(item) for item in document]
             return [_legacy_wallet_from_db(item) for item in document]
         if document.get("version") != 2:
             raise RuntimeError("Unsupported wallet database version")
@@ -241,10 +352,8 @@ def load_wallets_db() -> list[WalletAccount] | None:
             wallets.append(_wallet_from_plain(json.loads(plain)))
         return wallets
     except Exception as exc:
-        error("Failed to read encrypted wallet DB", exception_summary(exc))
-        raise RuntimeError(
-            "Encrypted wallet DB could not be opened; existing data was left untouched"
-        ) from exc
+        warn("Кэш кошельков", f"не прочитан; создаётся заново: {exception_summary(exc)}")
+        return None
 
 
 def load_wallets_from_privatekeys() -> list[WalletAccount]:
@@ -278,13 +387,17 @@ def init_wallets() -> list[WalletAccount]:
                 wallet.api_key_index = old.api_key_index
                 wallet.api_private_key = old.api_private_key
     save_wallets(current)
-    section("Кошельки", str(len(current)))
-    for wallet in current:
+    selected = filter_wallets_by_id(current, ID_FILTER)
+    if not selected:
+        raise RuntimeError("ID_FILTER не выбрал ни одного кошелька")
+
+    section("Кошельки", str(len(selected)))
+    for wallet in selected:
         label = wallet_prefix(wallet.index, mask_secret(wallet.address))
         proxy = f"proxy: {mask_proxy(wallet.proxy_url)}" if wallet.proxy_url else "proxy: none"
         plain(label, proxy)
 
-    execution_order = list(current)
+    execution_order = list(selected)
     if SHUFFLE_WALLETS:
         random.shuffle(execution_order)
     return execution_order

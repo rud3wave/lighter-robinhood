@@ -102,11 +102,21 @@ def line(char: str = "=", width: int = 68) -> str:
 def banner() -> None:
     title = "LIGHTER ROBINHOOD ETH"
     subtitle = "Delta-neutral trading"
+    inner_width = max(len(title), len(subtitle)) + 4
+    border = "+" + "=" * inner_width + "+"
     print()
-    print(paint("+" + "=" * 66 + "+", C.CYAN))
-    print(paint("|", C.CYAN) + paint(f"{title:^66}", C.BOLD + C.WHITE) + paint("|", C.CYAN))
-    print(paint("|", C.CYAN) + paint(f"{subtitle:^66}", C.GRAY) + paint("|", C.CYAN))
-    print(paint("+" + "=" * 66 + "+", C.CYAN))
+    print(paint(border, C.CYAN))
+    print(
+        paint("|", C.CYAN)
+        + paint(f"{title:^{inner_width}}", C.BOLD + C.WHITE)
+        + paint("|", C.CYAN)
+    )
+    print(
+        paint("|", C.CYAN)
+        + paint(f"{subtitle:^{inner_width}}", C.GRAY)
+        + paint("|", C.CYAN)
+    )
+    print(paint(border, C.CYAN))
 
 
 def section(title: str, hint: str = "") -> None:

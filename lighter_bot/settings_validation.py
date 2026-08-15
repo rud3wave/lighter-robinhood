@@ -5,6 +5,8 @@ from typing import Any
 
 import settings
 
+from .id_filter import parse_id_filter
+
 
 def _number(name: str, value: Any) -> Decimal:
     if isinstance(value, bool):
@@ -41,6 +43,7 @@ def _range(
 def validate_settings() -> None:
     if not isinstance(settings.SHUFFLE_WALLETS, bool):
         raise RuntimeError("SHUFFLE_WALLETS must be True or False")
+    parse_id_filter(settings.ID_FILTER)
     if type(settings.RETRY) is not int or settings.RETRY < 1:
         raise RuntimeError("RETRY must be a positive integer")
     if settings.EXECUTION_MODE not in {"leader-follower", "all-market"}:
@@ -137,6 +140,15 @@ def validate_settings() -> None:
     if not settings.DEPOSIT_ALL:
         _range("DEPOSIT_AMOUNT", settings.DEPOSIT_AMOUNT, minimum=Decimal("0.01"))
 
+    if not isinstance(settings.WITHDRAW_ALL, bool):
+        raise RuntimeError("WITHDRAW_ALL must be True or False")
+    if not settings.WITHDRAW_ALL:
+        _range(
+            "WITHDRAW_AMOUNT",
+            settings.WITHDRAW_AMOUNT,
+            minimum=Decimal("0.01"),
+        )
+
 
 def validate_market_leverage(max_leverage: dict[str, Decimal]) -> None:
     for token in settings.TOKENS_TO_TRADE:
@@ -157,6 +169,6 @@ def validate_group_wallet_count(wallet_count: int) -> None:
     invalid = [group for group in settings.GROUP_CONFIGS if sum(group) != wallet_count]
     if invalid:
         raise RuntimeError(
-            "Every GROUP_CONFIGS group must use all ready wallets: "
-            f"ready={wallet_count}, invalid={invalid}"
+            "Количество кошельков после ID_FILTER не совпадает с GROUP_CONFIGS: "
+            f"выбрано={wallet_count}, группы={invalid}"
         )

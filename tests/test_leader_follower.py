@@ -154,11 +154,11 @@ class AllocationTests(unittest.TestCase):
         )
         long_total = sum((item.notional for item in result if item.side == "long"), Decimal(0))
         short_total = sum((item.notional for item in result if item.side == "short"), Decimal(0))
-        self.assertEqual(long_total, short_total)
+        self.assertLessEqual(abs(long_total - short_total), Decimal("0.00000001"))
         self.assertEqual(result[0].side, "short")
 
     def test_impossible_allocation_fails(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "Unable to calculate"):
+        with self.assertRaisesRegex(RuntimeError, "Не получается выровнять"):
             calculate_allocation(
                 [(object(), Decimal("1")), (object(), Decimal("1"))],
                 long_count=1,
@@ -166,8 +166,45 @@ class AllocationTests(unittest.TestCase):
                 percent_bounds=[10, 10],
                 maker_min_notional=Decimal("10"),
                 taker_min_notional=Decimal(0),
-                attempts=3,
             )
+
+    def test_nine_wallet_group_uses_narrow_feasible_window(self) -> None:
+        random.seed(21)
+        balances = [
+            "19.992670",
+            "19.962667",
+            "14.555164",
+            "12.522554",
+            "9.692882",
+            "8.708154",
+            "8.252384",
+            "8.201122",
+            "5.453484",
+        ]
+        result = calculate_allocation(
+            [(object(), Decimal(balance)) for balance in balances],
+            long_count=4,
+            leverage_bounds=[7, 10],
+            percent_bounds=[85, 100],
+            maker_min_notional=Decimal("10"),
+            taker_min_notional=Decimal(0),
+        )
+
+        long_total = sum(
+            (item.notional for item in result if item.side == "long"),
+            Decimal(0),
+        )
+        short_total = sum(
+            (item.notional for item in result if item.side == "short"),
+            Decimal(0),
+        )
+        self.assertEqual(len(result), 9)
+        self.assertLessEqual(abs(long_total - short_total), Decimal("0.00000001"))
+        self.assertEqual(sum(item.side == "long" for item in result), 4)
+        for item in result:
+            used_percent = item.notional / item.balance / item.leverage * Decimal(100)
+            self.assertGreaterEqual(used_percent, Decimal(85))
+            self.assertLessEqual(used_percent, Decimal(100))
 
     def test_five_wallet_group_is_feasible(self) -> None:
         random.seed(17)

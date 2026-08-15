@@ -1,5 +1,7 @@
 import asyncio
+import math
 import random
+from dataclasses import dataclass
 from decimal import Decimal
 
 from settings import (
@@ -17,6 +19,8 @@ from settings import (
     TOKEN_LEVERAGE,
     TOKENS_TO_TRADE,
     TRADES_COUNT,
+    WITHDRAW_ALL,
+    WITHDRAW_AMOUNT,
 )
 
 from .allocation import Allocation, calculate_allocation
@@ -63,10 +67,27 @@ from .telegram import send_tg
 from .trade_report import TradeMetrics, discover_open_timestamp, summarize_trades
 from .utils import now_ms, pick_range
 from .wallets import WalletAccount, init_wallets, mask_secret, save_wallets
+from .withdraw import (
+    ClaimResult,
+    WithdrawalResult,
+    claim_pending_usdg,
+    pick_withdrawal_amount,
+    withdraw_usdg,
+    withdrawal_delay_seconds,
+)
 
 
 def _wallet_log_label(wallet: WalletAccount) -> str:
     return wallet_prefix(wallet.index, mask_secret(wallet.address))
+
+
+@dataclass
+class RegistrationResult:
+    tx_hash: str | None = None
+    registration_ready: bool = False
+    registration_confirmed: bool = False
+    code_owner: bool = False
+    error: str = ""
 
 
 def _tg_service_label(service: LighterService) -> str:
@@ -160,7 +181,7 @@ class Controller:
 
         changed = any(await asyncio.gather(*(setup_one(wallet) for wallet in wallets)))
         if changed:
-            save_wallets(wallets)
+            save_wallets(wallets, preserve_existing=True)
             await send_tg(f"✅ АККАУНТЫ ГОТОВЫ | {len(wallets)} кошельков")
 
     async def resolve_accounts(self, wallets: list[WalletAccount] | None = None) -> list[WalletAccount]:
@@ -177,7 +198,7 @@ class Controller:
 
         changed = any(await asyncio.gather(*(resolve_one(wallet) for wallet in wallets)))
         if changed:
-            save_wallets(wallets)
+            save_wallets(wallets, preserve_existing=True)
         return wallets
 
     async def deposit_from_wallets(self) -> None:
@@ -190,66 +211,105 @@ class Controller:
             f"{len(wallets)} кошельков | {'весь баланс' if DEPOSIT_ALL else DEPOSIT_AMOUNT}",
         )
 
-        async def deposit_one(wallet: WalletAccount) -> tuple[str | None, bool, bool]:
+        async def deposit_one(wallet: WalletAccount) -> RegistrationResult:
+            result = RegistrationResult()
             try:
-                wallet_changed = await self._resolve_wallet_account(wallet)
+                await self._resolve_wallet_account(wallet)
                 had_account = wallet.account_index is not None
+
                 if had_account:
-                    try:
-                        wallet_changed = (
-                            await self._ensure_api_key(wallet)
-                            or wallet_changed
+                    await self._ensure_api_key(wallet)
+                    if not wallet.can_trade:
+                        raise RuntimeError("торговый доступ не настроен")
+                    referral = await use_referral(wallet)
+                    if not referral:
+                        raise RuntimeError(
+                            referral.error or "регистрация не подтверждена"
                         )
-                    except Exception as exc:
-                        warn(_wallet_log_label(wallet), f"аккаунт не подготовлен: {exception_summary(exc)}")
+                    result.registration_ready = True
+                    result.registration_confirmed = referral.confirmed
+                    result.code_owner = referral.code_owner
 
                 amount = None if DEPOSIT_ALL else pick_deposit_amount(DEPOSIT_AMOUNT)
-                tx_hash = await deposit_token(wallet, amount)
-                return tx_hash, bool(tx_hash and not had_account), wallet_changed
+                result.tx_hash = await deposit_token(wallet, amount)
+
+                if not had_account:
+                    if not result.tx_hash:
+                        raise RuntimeError("для регистрации нового аккаунта нужен USDG-депозит")
+                    await self._wait_for_account(wallet)
+                    if wallet.account_index is None:
+                        raise RuntimeError("аккаунт ещё создаётся; повтори режим 4 позже")
+                    await self._ensure_api_key(wallet)
+                    if not wallet.can_trade:
+                        raise RuntimeError("торговый доступ не настроен")
+                    referral = await use_referral(wallet)
+                    if not referral:
+                        raise RuntimeError(
+                            referral.error or "регистрация не подтверждена"
+                        )
+                    result.registration_ready = True
+                    result.registration_confirmed = referral.confirmed
+                    result.code_owner = referral.code_owner
+
+                registration_text = (
+                    "аккаунт готов"
+                    if result.code_owner
+                    else "регистрация подтверждена"
+                )
+                ok(_wallet_log_label(wallet), registration_text)
             except Exception as exc:
-                error(_wallet_log_label(wallet), f"ошибка депозита: {exception_summary(exc)}")
-                return None, False, False
+                result.error = exception_summary(exc)
+                error(_wallet_log_label(wallet), result.error)
+            return result
 
         deposit_results = await asyncio.gather(*(deposit_one(wallet) for wallet in wallets))
-        tx_hashes = [tx_hash for tx_hash, _, _ in deposit_results if tx_hash]
-        pending_registration = [
-            wallet
-            for wallet, (_, pending, _) in zip(wallets, deposit_results)
-            if pending
-        ]
-        changed = any(wallet_changed for _, _, wallet_changed in deposit_results)
+        save_wallets(wallets, preserve_existing=True)
 
-        async def finish_registration(wallet: WalletAccount) -> bool:
-            try:
-                resolved = await self._wait_for_account(wallet)
-                if resolved:
-                    changed_now = await self._ensure_api_key(wallet)
-                    await use_referral(wallet)
-                    return changed_now or resolved
-                return False
-            except Exception as exc:
-                warn(_wallet_log_label(wallet), f"аккаунт ещё создаётся: {exception_summary(exc)}")
-                return False
+        tx_hashes = [result.tx_hash for result in deposit_results if result.tx_hash]
+        ready_count = sum(result.registration_ready for result in deposit_results)
+        summary = (
+            f"регистрация {ready_count}/{len(wallets)} | "
+            f"депозиты {len(tx_hashes)}/{len(wallets)}"
+        )
+        if ready_count == len(wallets):
+            ok("Готово", summary)
+        else:
+            warn("Не завершено", summary)
 
-        if pending_registration:
-            registration_results = await asyncio.gather(
-                *(finish_registration(wallet) for wallet in pending_registration)
+        lines = [f"💰 РЕГИСТРАЦИЯ + ДЕПОЗИТ | {len(wallets)} кошельков", ""]
+        for wallet, result in zip(wallets, deposit_results):
+            address = mask_secret(wallet.address)
+            deposit_text = (
+                f"tx {mask_secret(result.tx_hash)}"
+                if result.tx_hash
+                else "без депозита"
             )
-            changed = any(registration_results) or changed
-        if changed:
-            save_wallets(wallets)
-        ok("Депозиты", f"подтверждено {len(tx_hashes)}/{len(wallets)}")
-        lines = [f"💰 USDG DEPOSIT | {len(wallets)} кошельков", ""]
-        for wallet, (tx_hash, pending, _) in zip(wallets, deposit_results):
-            if tx_hash:
-                state = "аккаунт создаётся" if pending else "готово"
+            if result.registration_ready and not result.error:
+                registration_text = (
+                    "аккаунт готов"
+                    if result.code_owner
+                    else "регистрация подтверждена"
+                )
+                lines.append(f"✅ {address} | {registration_text} | {deposit_text}")
+            elif result.registration_ready:
+                registration_text = (
+                    "аккаунт готов"
+                    if result.code_owner
+                    else "регистрация подтверждена"
+                )
                 lines.append(
-                    f"✅ {mask_secret(wallet.address)} | "
-                    f"{state} | tx {mask_secret(tx_hash)}"
+                    f"⚠️ {address} | {registration_text} | {deposit_text} | {result.error}"
                 )
             else:
-                lines.append(f"⚠️ {mask_secret(wallet.address)} | без депозита")
-        lines.extend(["", f"Подтверждено: {len(tx_hashes)}/{len(wallets)}"])
+                detail = result.error or "регистрация не подтверждена"
+                lines.append(f"❌ {address} | {detail} | {deposit_text}")
+        lines.extend(
+            [
+                "",
+                f"Регистрация: {ready_count}/{len(wallets)}",
+                f"Депозиты: {len(tx_hashes)}/{len(wallets)}",
+            ]
+        )
         await send_tg("\n".join(lines))
 
     async def _services(self, require_trading: bool = False) -> list[LighterService]:
@@ -301,7 +361,7 @@ class Controller:
             changed = any(keys) or changed
 
         if changed:
-            save_wallets(wallets)
+            save_wallets(wallets, preserve_existing=True)
         return wallets
 
     async def _resolve_wallet_account(self, wallet: WalletAccount) -> bool:
@@ -384,6 +444,159 @@ class Controller:
             await send_tg("\n".join(lines))
         finally:
             await asyncio.gather(*(svc.close() for svc in services), return_exceptions=True)
+
+    async def withdraw_to_wallets(self) -> None:
+        wallets = self._load_wallets()
+        if not wallets:
+            raise RuntimeError("No wallets loaded from input_data/privatekeys.txt")
+
+        await self._prepare_wallets(wallets, require_trading=False)
+        preflight_services = [
+            LighterService(wallet, API_BASE_URL, dry_run=True)
+            for wallet in wallets
+        ]
+        try:
+            states = await asyncio.gather(
+                *(
+                    asyncio.to_thread(service.account_state)
+                    for service in preflight_services
+                ),
+                return_exceptions=True,
+            )
+        finally:
+            await asyncio.gather(
+                *(service.close() for service in preflight_services),
+                return_exceptions=True,
+            )
+
+        unreadable = sum(isinstance(state, BaseException) for state in states)
+        if unreadable:
+            raise RuntimeError(
+                f"не удалось проверить позиции на {unreadable} кошельках"
+            )
+        open_wallets = sum(
+            any(
+                Decimal(str(position.get("position", "0"))) != 0
+                for position in state.get("positions", [])
+            )
+            for state in states
+        )
+        if open_wallets:
+            section(f"Вывод {DEPOSIT_TOKEN_SYMBOL}", f"{len(wallets)} кошельков")
+            detail = (
+                f"открытые позиции: {open_wallets}/{len(wallets)} | "
+                "сначала запусти режим 2"
+            )
+            warn("Вывод остановлен", detail)
+            await send_tg(
+                f"⚠️ ВЫВОД ОСТАНОВЛЕН | {detail}",
+                attempts=1,
+            )
+            return
+
+        await self._prepare_wallets(wallets, require_trading=True)
+        services = [
+            LighterService(wallet, API_BASE_URL, dry_run=False)
+            for wallet in wallets
+        ]
+        try:
+            try:
+                delay_seconds = await withdrawal_delay_seconds(
+                    services[0].wallet.proxy_url
+                )
+            except Exception:
+                delay_seconds = 0
+            delay_minutes = max(1, math.ceil(delay_seconds / 60)) if delay_seconds else 0
+            hint = (
+                f"{len(services)} кошельков | зачисление примерно {delay_minutes} мин"
+                if delay_minutes
+                else f"{len(services)} кошельков"
+            )
+            section(f"Вывод {DEPOSIT_TOKEN_SYMBOL}", hint)
+
+            async def withdraw_one(
+                service: LighterService,
+            ) -> tuple[ClaimResult, WithdrawalResult, list[str]]:
+                failures = []
+                try:
+                    claim = await claim_pending_usdg(service)
+                except Exception as exc:
+                    detail = f"получение: {exception_summary(exc)}"
+                    error(service.label(), detail)
+                    claim = ClaimResult(detail=detail)
+                    failures.append(detail)
+
+                try:
+                    amount = (
+                        None
+                        if WITHDRAW_ALL
+                        else pick_withdrawal_amount(WITHDRAW_AMOUNT)
+                    )
+                    result = await withdraw_usdg(service, amount)
+                except Exception as exc:
+                    detail = f"запрос: {exception_summary(exc)}"
+                    error(service.label(), detail)
+                    result = WithdrawalResult(detail=detail)
+                    failures.append(detail)
+                return claim, result, failures
+
+            results = await asyncio.gather(
+                *(withdraw_one(service) for service in services)
+            )
+            sent = [result for _, result, _ in results if result.sent]
+            claimed = [claim for claim, _, _ in results if claim.claimed]
+            total = sum((result.amount for result in sent), Decimal(0))
+            claimed_total = sum((result.amount for result in claimed), Decimal(0))
+            failures_count = sum(bool(failures) for _, _, failures in results)
+            summary = (
+                f"получено {fmt_number(claimed_total)} | "
+                f"запрошено {fmt_number(total)} {DEPOSIT_TOKEN_SYMBOL}"
+            )
+            if failures_count == 0:
+                ok("Вывод завершён", summary)
+            else:
+                warn("Выводы завершены", summary)
+
+            lines = [
+                f"💸 ВЫВОД {DEPOSIT_TOKEN_SYMBOL} | {len(services)} кошельков",
+                "",
+            ]
+            for service, (claim, result, failures) in zip(services, results):
+                address = _tg_service_label(service)
+                actions = []
+                if claim.claimed:
+                    actions.append(f"получено {fmt_number(claim.amount)}")
+                if result.sent:
+                    actions.append(f"запрошено {fmt_number(result.amount)}")
+                if failures:
+                    marker = "⚠️" if actions else "❌"
+                    details = [*actions, *failures]
+                    lines.append(f"{marker} {address} | {' | '.join(details)}")
+                elif actions:
+                    lines.append(
+                        f"✅ {address} | {' | '.join(actions)} "
+                        f"{DEPOSIT_TOKEN_SYMBOL}"
+                    )
+                else:
+                    lines.append(f"➖ {address} | {result.detail or claim.detail}")
+            lines.extend(
+                [
+                    "",
+                    f"Заявки: {len(sent)}/{len(services)}",
+                    f"Запрошено: {fmt_number(total)} {DEPOSIT_TOKEN_SYMBOL}",
+                    f"Получено: {fmt_number(claimed_total)} {DEPOSIT_TOKEN_SYMBOL}",
+                ]
+            )
+            if delay_minutes:
+                lines.append(
+                    f"Повтори режим 5 примерно через {delay_minutes} мин для получения"
+                )
+            await send_tg("\n".join(lines))
+        finally:
+            await asyncio.gather(
+                *(service.close() for service in services),
+                return_exceptions=True,
+            )
 
     async def cancel_all(self) -> None:
         services = await self._services(require_trading=True)

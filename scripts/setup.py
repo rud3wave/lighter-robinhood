@@ -19,8 +19,8 @@ export const TELEGRAM = {
   chatId: 0,
 };
 
-// Used for local AES-256-GCM encryption. Set once before the first run.
-// Do not change this password after your files have been encrypted.
+// Encrypts private keys stored in databases/wallets.json.
+// Do not change this password after the database has been created.
 export const ENCRYPTION_PASSWORD = 'change-me-before-first-run';
 """
 

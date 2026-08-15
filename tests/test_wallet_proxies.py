@@ -47,6 +47,7 @@ class ProxyPoolTests(unittest.TestCase):
             wallets = load_wallets_from_privatekeys()
 
         self.assertEqual([wallet.proxy_url for wallet in wallets], pool * 3)
+        self.assertEqual([wallet.wallet_id for wallet in wallets], [1, 2, 3])
 
     def test_cached_dead_proxy_does_not_replace_fresh_assignment(self) -> None:
         fresh = WalletAccount(

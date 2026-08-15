@@ -16,6 +16,7 @@ class OneShotMainTests(unittest.IsolatedAsyncioTestCase):
         self.controller.close_positions = AsyncMock()
         self.controller.balances = AsyncMock()
         self.controller.deposit_from_wallets = AsyncMock()
+        self.controller.withdraw_to_wallets = AsyncMock()
 
     async def _run(self, choice: str) -> None:
         with (
@@ -34,6 +35,10 @@ class OneShotMainTests(unittest.IsolatedAsyncioTestCase):
     async def test_deposit_mode_runs_once_and_exits(self) -> None:
         await self._run("4")
         self.controller.deposit_from_wallets.assert_awaited_once()
+
+    async def test_withdraw_mode_runs_once_and_exits(self) -> None:
+        await self._run("5")
+        self.controller.withdraw_to_wallets.assert_awaited_once()
 
     async def test_close_mode_requests_halt_runs_once_and_exits(self) -> None:
         with patch.object(app_main, "request_trading_halt") as request_halt:

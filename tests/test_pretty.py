@@ -5,10 +5,22 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from lighter_bot.pretty import fmt_number, format_user_text, plain
+from lighter_bot.pretty import banner, fmt_number, format_user_text, plain
 
 
 class PrettyLogTests(unittest.TestCase):
+    def test_banner_frame_follows_text_width(self) -> None:
+        output = io.StringIO()
+        with patch("lighter_bot.pretty.USE_COLOR", False), redirect_stdout(output):
+            banner()
+
+        lines = [line for line in output.getvalue().splitlines() if line]
+        self.assertEqual(len({len(line) for line in lines}), 1)
+        self.assertEqual(lines[0], "+" + "=" * 25 + "+")
+        self.assertEqual(lines[-1], lines[0])
+        self.assertEqual(lines[1], "|  LIGHTER ROBINHOOD ETH  |")
+        self.assertEqual(lines[2], "|  Delta-neutral trading  |")
+
     def test_numbers_use_at_most_two_decimal_places(self) -> None:
         self.assertEqual(fmt_number("0.00000213"), "0")
         self.assertEqual(fmt_number("12.500000"), "12.5")

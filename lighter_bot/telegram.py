@@ -34,20 +34,21 @@ def _send(message: str) -> None:
         raise RuntimeError(str(payload.get("description") or "Telegram returned ok=false"))
 
 
-async def send_tg(message: str) -> bool:
+async def send_tg(message: str, attempts: int | None = None) -> bool:
     message = format_user_text(message)
     config = load_global_config().telegram
     if not config.enabled:
         return False
 
+    retry_count = max(1, RETRY if attempts is None else attempts)
     last_error = "unknown error"
-    for attempt in range(1, max(1, RETRY) + 1):
+    for attempt in range(1, retry_count + 1):
         try:
             await asyncio.to_thread(_send, message)
             return True
         except Exception as exc:
             last_error = str(exc).replace(config.token, "<bot-token>")
-            if attempt < max(1, RETRY):
+            if attempt < retry_count:
                 await asyncio.sleep(attempt)
     warn("Telegram failed", last_error)
     return False
