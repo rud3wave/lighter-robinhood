@@ -12,10 +12,8 @@ from lighter_bot.wallets import WalletAccount
 from lighter_bot.withdraw import (
     WithdrawalResult,
     _asset_from_payload,
-    _bridge_address_from_payload,
     _fast_withdrawal_memo,
     _withdrawal_amount,
-    claim_pending_usdg,
     fast_withdraw_usdg,
     withdraw_usdg,
 )
@@ -31,16 +29,6 @@ ASSET_PAYLOAD = {
         }
     ]
 }
-
-LAYER1_PAYLOAD = {
-    "contract_addresses": [
-        {
-            "name": "ZkLighterContract",
-            "address": "0x94bAB9693Ba2f6358507eFfcbd372b0660AFfF9d",
-        }
-    ]
-}
-
 
 class WithdrawalTests(unittest.IsolatedAsyncioTestCase):
     def service(self, *, balance: str = "12.520000", position: str = "0"):
@@ -105,37 +93,6 @@ class WithdrawalTests(unittest.IsolatedAsyncioTestCase):
             _withdrawal_amount(Decimal("12.1234569"), None, asset.decimals),
             Decimal("12.123456"),
         )
-        self.assertEqual(
-            _bridge_address_from_payload(LAYER1_PAYLOAD),
-            "0x94bAB9693Ba2f6358507eFfcbd372b0660AFfF9d",
-        )
-
-    async def test_claims_ready_l1_balance(self) -> None:
-        service = self.service()
-        service.public._get.side_effect = [ASSET_PAYLOAD, LAYER1_PAYLOAD]
-        plan = SimpleNamespace(amount_i=2_500_000, amount=Decimal("2.5"))
-        with (
-            patch("lighter_bot.withdraw._prepare_claim", return_value=plan),
-            patch("lighter_bot.withdraw._send_claim", return_value="0x" + "4" * 64),
-            patch("lighter_bot.withdraw.ok"),
-        ):
-            result = await claim_pending_usdg(service)
-
-        self.assertTrue(result.claimed)
-        self.assertEqual(result.amount, Decimal("2.5"))
-
-    async def test_empty_l1_claim_is_quiet(self) -> None:
-        service = self.service()
-        service.public._get.side_effect = [ASSET_PAYLOAD, LAYER1_PAYLOAD]
-        plan = SimpleNamespace(amount_i=0, amount=Decimal(0))
-        with (
-            patch("lighter_bot.withdraw._prepare_claim", return_value=plan),
-            patch("lighter_bot.withdraw._send_claim") as send,
-        ):
-            result = await claim_pending_usdg(service)
-
-        self.assertFalse(result.claimed)
-        send.assert_not_called()
 
     async def test_withdraw_all_uses_perps_route(self) -> None:
         service = self.service()
@@ -264,7 +221,7 @@ class WithdrawalTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WithdrawalModeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_open_positions_stop_mode_before_claim_or_withdraw(self) -> None:
+    async def test_open_positions_stop_mode_before_withdraw(self) -> None:
         wallet = WalletAccount(
             index=0,
             private_key="0x" + "1" * 64,
@@ -283,7 +240,6 @@ class WithdrawalModeTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("lighter_bot.controller.LighterService", return_value=service),
-            patch("lighter_bot.controller.claim_pending_usdg", new_callable=AsyncMock) as claim,
             patch("lighter_bot.controller.withdraw_usdg", new_callable=AsyncMock) as withdraw,
             patch("lighter_bot.controller.send_tg", new_callable=AsyncMock) as telegram,
             patch("lighter_bot.controller.section"),
@@ -295,12 +251,11 @@ class WithdrawalModeTests(unittest.IsolatedAsyncioTestCase):
             [wallet],
             require_trading=False,
         )
-        claim.assert_not_awaited()
         withdraw.assert_not_awaited()
         telegram.assert_awaited_once()
         self.assertEqual(telegram.await_args.kwargs["attempts"], 1)
 
-    async def test_fast_mode_does_not_run_secure_claim_or_delay(self) -> None:
+    async def test_fast_mode_does_not_read_secure_delay(self) -> None:
         wallet = WalletAccount(
             index=0,
             private_key="0x" + "1" * 64,
@@ -319,7 +274,6 @@ class WithdrawalModeTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("lighter_bot.controller.LighterService", side_effect=[preflight, live]),
-            patch("lighter_bot.controller.claim_pending_usdg", new_callable=AsyncMock) as claim,
             patch("lighter_bot.controller.withdrawal_delay_seconds", new_callable=AsyncMock) as delay,
             patch(
                 "lighter_bot.controller.withdraw_usdg",
@@ -335,11 +289,10 @@ class WithdrawalModeTests(unittest.IsolatedAsyncioTestCase):
         ):
             await controller.withdraw_to_wallets("fast")
 
-        claim.assert_not_awaited()
         delay.assert_not_awaited()
         withdraw.assert_awaited_once_with(live, None, method="fast")
 
-    async def test_secure_mode_prints_and_sends_the_claim_instruction(self) -> None:
+    async def test_secure_mode_explains_automatic_delivery(self) -> None:
         wallet = WalletAccount(
             index=0,
             private_key="0x" + "1" * 64,
@@ -358,11 +311,6 @@ class WithdrawalModeTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("lighter_bot.controller.LighterService", side_effect=[preflight, live]),
-            patch(
-                "lighter_bot.controller.claim_pending_usdg",
-                new_callable=AsyncMock,
-                return_value=SimpleNamespace(claimed=False, amount=Decimal(0), detail=""),
-            ),
             patch(
                 "lighter_bot.controller.withdrawal_delay_seconds",
                 new_callable=AsyncMock,
@@ -384,8 +332,9 @@ class WithdrawalModeTests(unittest.IsolatedAsyncioTestCase):
             await controller.withdraw_to_wallets("secure")
 
         info_log.assert_called_once()
-        self.assertIn("режим 5 -> Secure", info_log.call_args.args[1])
-        self.assertIn("режим 5 -> Secure", telegram.await_args.args[0])
+        self.assertIn("Lighter сам отправит", info_log.call_args.args[1])
+        self.assertIn("Lighter сам отправит", telegram.await_args.args[0])
+        self.assertNotIn("режим 5", telegram.await_args.args[0])
 
 
 if __name__ == "__main__":

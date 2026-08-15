@@ -26,7 +26,7 @@ def choose_withdraw_method() -> str | None:
     print()
     print(paint("Выбери способ вывода:", C.BOLD + C.WHITE))
     print(f"  {paint('1', C.CYAN)} = Fast   - 15-20 сек, возможна комиссия")
-    print(f"  {paint('2', C.CYAN)} = Secure - около часа, потом повторить режим")
+    print(f"  {paint('2', C.CYAN)} = Secure - около часа, Lighter отправит сам")
     print(f"  {paint('0', C.GRAY)} = Выход")
     choice = input(paint("> ", C.BOLD + C.CYAN)).strip()
     if choice == "1":

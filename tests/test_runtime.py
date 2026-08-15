@@ -53,12 +53,12 @@ class OneShotMainTests(unittest.IsolatedAsyncioTestCase):
         await self._run("5", "0")
         self.controller.withdraw_to_wallets.assert_not_awaited()
 
-    def test_secure_menu_explains_the_second_run(self) -> None:
+    def test_secure_menu_explains_automatic_delivery(self) -> None:
         output = io.StringIO()
         with patch("builtins.input", return_value="2"), redirect_stdout(output):
             method = app_main.choose_withdraw_method()
         self.assertEqual(method, "secure")
-        self.assertIn("потом повторить режим", output.getvalue())
+        self.assertIn("Lighter отправит сам", output.getvalue())
 
     async def test_close_mode_requests_halt_runs_once_and_exits(self) -> None:
         with patch.object(app_main, "request_trading_halt") as request_halt:
