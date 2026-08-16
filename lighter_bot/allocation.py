@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from typing import Any, Literal
 
+from settings import SHUFFLE_WALLETS
+
 
 PositionSide = Literal["long", "short"]
 
@@ -149,9 +151,6 @@ def calculate_allocation(
     if any(balance <= 0 for _, balance in accounts):
         raise RuntimeError("Для торговли баланс каждого кошелька должен быть больше 0")
 
-    min_leverage, max_leverage = _leverage_bounds(leverage_bounds)
-    min_percent, max_percent = sorted(Decimal(str(value)) for value in percent_bounds)
-    sorted_accounts = sorted(accounts, key=lambda item: item[1], reverse=True)
     short_count = len(accounts) - long_count
     source_count = min(long_count, short_count)
     source_side: PositionSide = "long" if long_count <= short_count else "short"
@@ -160,10 +159,52 @@ def calculate_allocation(
         if preferred_count != source_count:
             raise RuntimeError("Preferred leader side must be the smaller side of the group")
         source_side = preferred_source_side
+
+    ranked = sorted(accounts, key=lambda item: item[1], reverse=True)
+    if SHUFFLE_WALLETS:
+        # Случайный состав сторон в каждом цикле; разбивка по балансу остаётся
+        # запасным вариантом, когда случайный состав нельзя выровнять.
+        shuffled = list(accounts)
+        random.shuffle(shuffled)
+        orderings = [shuffled]
+        if ranked != shuffled:
+            orderings.append(ranked)
+    else:
+        orderings = [ranked]
+
+    last_error: RuntimeError | None = None
+    for ordered in orderings:
+        try:
+            return _split_group(
+                ordered,
+                source_count,
+                source_side,
+                leverage_bounds,
+                percent_bounds,
+                maker_min_notional,
+                taker_min_notional,
+            )
+        except RuntimeError as exc:
+            last_error = exc
+    assert last_error is not None
+    raise last_error
+
+
+def _split_group(
+    ordered_accounts: list[tuple[Any, Decimal]],
+    source_count: int,
+    source_side: PositionSide,
+    leverage_bounds: list[int | float],
+    percent_bounds: list[int | float],
+    maker_min_notional: Decimal,
+    taker_min_notional: Decimal,
+) -> list[Allocation]:
+    min_leverage, max_leverage = _leverage_bounds(leverage_bounds)
+    min_percent, max_percent = sorted(Decimal(str(value)) for value in percent_bounds)
     target_side: PositionSide = "short" if source_side == "long" else "long"
 
-    source_accounts = sorted_accounts[:source_count]
-    target_accounts = sorted_accounts[source_count:]
+    source_accounts = ordered_accounts[:source_count]
+    target_accounts = ordered_accounts[source_count:]
     source_minimums, source_maximums = _notional_bounds(
         source_accounts,
         min_percent,

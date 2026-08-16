@@ -223,6 +223,47 @@ class AllocationTests(unittest.TestCase):
         self.assertEqual(long_total, short_total)
         self.assertEqual(sum(item.side == "long" for item in result), 3)
 
+    def test_wallet_sides_change_between_cycles(self) -> None:
+        with patch("lighter_bot.allocation.SHUFFLE_WALLETS", True):
+            accounts = [(object(), Decimal("10")) for _ in range(6)]
+            splits = set()
+            for seed in range(30):
+                random.seed(seed)
+                result = calculate_allocation(
+                    accounts,
+                    long_count=3,
+                    leverage_bounds=[2, 2],
+                    percent_bounds=[50, 50],
+                    maker_min_notional=Decimal("1"),
+                    taker_min_notional=Decimal(0),
+                )
+                self.assertEqual(sum(item.side == "long" for item in result), 3)
+                splits.add(
+                    frozenset(item.service for item in result if item.side == "long")
+                )
+            self.assertGreater(len(splits), 1)
+
+    def test_wallet_sides_follow_balance_without_shuffle(self) -> None:
+        with patch("lighter_bot.allocation.SHUFFLE_WALLETS", False):
+            services = [object() for _ in range(6)]
+            balances = ["11", "9", "10", "7", "8", "6"]
+            accounts = list(zip(services, (Decimal(value) for value in balances)))
+            splits = set()
+            for seed in range(5):
+                random.seed(seed)
+                result = calculate_allocation(
+                    accounts,
+                    long_count=3,
+                    leverage_bounds=[1, 10],
+                    percent_bounds=[10, 100],
+                    maker_min_notional=Decimal("1"),
+                    taker_min_notional=Decimal(0),
+                )
+                splits.add(
+                    frozenset(item.service for item in result if item.side == "long")
+                )
+            self.assertEqual(splits, {frozenset(services[:3])})
+
     def test_base_allocation_is_exact_after_rounding(self) -> None:
         services = [object(), object(), object()]
         targets = allocate_targets(
