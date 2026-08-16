@@ -10,6 +10,8 @@ from settings import SHUFFLE_WALLETS
 
 PositionSide = Literal["long", "short"]
 
+_SPLIT_ATTEMPTS = 50
+
 
 @dataclass(frozen=True)
 class Allocation:
@@ -160,17 +162,16 @@ def calculate_allocation(
             raise RuntimeError("Preferred leader side must be the smaller side of the group")
         source_side = preferred_source_side
 
-    ranked = sorted(accounts, key=lambda item: item[1], reverse=True)
+    # Окно выравнивания узкое: состав сторон ищется перебором случайных
+    # разбивок, разбивка по балансу остаётся последним запасным вариантом.
+    orderings: list[list[tuple[Any, Decimal]]] = []
     if SHUFFLE_WALLETS:
-        # Случайный состав сторон в каждом цикле; разбивка по балансу остаётся
-        # запасным вариантом, когда случайный состав нельзя выровнять.
-        shuffled = list(accounts)
-        random.shuffle(shuffled)
-        orderings = [shuffled]
-        if ranked != shuffled:
-            orderings.append(ranked)
-    else:
-        orderings = [ranked]
+        for _ in range(_SPLIT_ATTEMPTS):
+            shuffled = list(accounts)
+            random.shuffle(shuffled)
+            orderings.append(shuffled)
+    ranked = sorted(accounts, key=lambda item: item[1], reverse=True)
+    orderings.append(ranked)
 
     last_error: RuntimeError | None = None
     for ordered in orderings:

@@ -264,6 +264,44 @@ class AllocationTests(unittest.TestCase):
                 )
             self.assertEqual(splits, {frozenset(services[:3])})
 
+    def _top_heavy_accounts(self) -> list[tuple[object, Decimal]]:
+        return [(object(), Decimal("20")) for _ in range(4)] + [
+            (object(), Decimal("1")) for _ in range(5)
+        ]
+
+    def test_random_splits_find_feasible_mix_when_balance_ranking_fails(self) -> None:
+        with patch("lighter_bot.allocation.SHUFFLE_WALLETS", True):
+            result = calculate_allocation(
+                self._top_heavy_accounts(),
+                long_count=4,
+                leverage_bounds=[7, 10],
+                percent_bounds=[85, 100],
+                maker_min_notional=Decimal("1"),
+                taker_min_notional=Decimal(0),
+            )
+            long_total = sum(
+                (item.notional for item in result if item.side == "long"),
+                Decimal(0),
+            )
+            short_total = sum(
+                (item.notional for item in result if item.side == "short"),
+                Decimal(0),
+            )
+            self.assertEqual(len(result), 9)
+            self.assertLessEqual(abs(long_total - short_total), Decimal("0.00000001"))
+
+    def test_balance_ranking_alone_gives_up_on_top_heavy_balances(self) -> None:
+        with patch("lighter_bot.allocation.SHUFFLE_WALLETS", False):
+            with self.assertRaisesRegex(RuntimeError, "Не получается выровнять"):
+                calculate_allocation(
+                    self._top_heavy_accounts(),
+                    long_count=4,
+                    leverage_bounds=[7, 10],
+                    percent_bounds=[85, 100],
+                    maker_min_notional=Decimal("1"),
+                    taker_min_notional=Decimal(0),
+                )
+
     def test_base_allocation_is_exact_after_rounding(self) -> None:
         services = [object(), object(), object()]
         targets = allocate_targets(
