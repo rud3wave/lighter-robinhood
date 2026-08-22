@@ -19,6 +19,7 @@ class OneShotMainTests(unittest.IsolatedAsyncioTestCase):
         self.controller.balances = AsyncMock()
         self.controller.deposit_from_wallets = AsyncMock()
         self.controller.withdraw_to_wallets = AsyncMock()
+        self.controller.points = AsyncMock()
 
     async def _run(self, choice: str, *next_choices: str) -> None:
         with (
@@ -48,6 +49,10 @@ class OneShotMainTests(unittest.IsolatedAsyncioTestCase):
     async def test_secure_withdraw_mode_runs_once_and_exits(self) -> None:
         await self._run("5", "2")
         self.controller.withdraw_to_wallets.assert_awaited_once_with("secure")
+
+    async def test_points_mode_runs_once_and_exits(self) -> None:
+        await self._run("6")
+        self.controller.points.assert_awaited_once()
 
     async def test_withdraw_method_menu_can_exit(self) -> None:
         await self._run("5", "0")

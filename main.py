@@ -19,6 +19,7 @@ def print_menu() -> None:
     print(f"  {paint('3', C.CYAN)} = Проверить балансы")
     print(f"  {paint('4', C.CYAN)} = Регистрация + пополнение USDG")
     print(f"  {paint('5', C.CYAN)} = Вывод средств")
+    print(f"  {paint('6', C.CYAN)} = Проверить поинты")
     print(f"  {paint('0', C.GRAY)} = Выход")
 
 
@@ -67,6 +68,8 @@ async def main() -> None:
             if withdraw_method is None:
                 return
             await controller.withdraw_to_wallets(withdraw_method)
+        elif choice == "6":
+            await controller.points()
         elif choice == "0":
             return
         else:

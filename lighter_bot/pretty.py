@@ -56,10 +56,25 @@ def fmt_number(
     return result
 
 
+def fmt_points(value: Any) -> str:
+    try:
+        number = Decimal(str(value).replace(",", "."))
+        rounded = number.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError):
+        return str(value)
+
+    if rounded == 0:
+        return "0"
+    return f"{rounded:.6f}".rstrip("0").rstrip(".")
+
+
 def format_user_text(value: Any) -> str:
     text = str(value)
 
     def replace_decimal(match: re.Match[str]) -> str:
+        prefix = text[max(0, match.start() - 24) : match.start()]
+        if re.search(r"Points:\s*$", prefix, re.IGNORECASE):
+            return match.group(0)
         raw = "".join(match.groups())
         return fmt_number(
             raw,

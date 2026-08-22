@@ -5,7 +5,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from lighter_bot.pretty import banner, fmt_number, format_user_text, plain
+from lighter_bot.pretty import banner, fmt_number, fmt_points, format_user_text, plain
 
 
 class PrettyLogTests(unittest.TestCase):
@@ -27,6 +27,10 @@ class PrettyLogTests(unittest.TestCase):
         self.assertEqual(fmt_number("12.345"), "12.35")
         self.assertEqual(fmt_number("0.005", signed=True), "+0.01")
         self.assertEqual(fmt_number("-0.004", signed=True), "0")
+
+    def test_points_keep_six_decimal_places(self) -> None:
+        self.assertEqual(fmt_points("0.075403"), "0.075403")
+        self.assertEqual(format_user_text("Points: 0.075403"), "Points: 0.075403")
 
     def test_text_formatter_preserves_proxy_ip_and_versions(self) -> None:
         text = "proxy http://***@130.49.82.50:63532 | sdk 1.1.2 | fee=0.00000213"

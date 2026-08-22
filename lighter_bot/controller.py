@@ -39,6 +39,7 @@ from .pretty import (
     error,
     exception_summary,
     fmt_number,
+    fmt_points,
     info,
     ok,
     plain,
@@ -442,6 +443,36 @@ class Controller:
             await send_tg("\n".join(lines))
         finally:
             await asyncio.gather(*(svc.close() for svc in services), return_exceptions=True)
+
+    async def points(self) -> None:
+        services = await self._services(require_trading=True)
+        try:
+            section("Поинты", f"{len(services)} кошельков")
+
+            async def read_points(svc: LighterService) -> tuple[Decimal, str]:
+                try:
+                    value = await svc.points()
+                    points_text = fmt_points(value)
+                    plain(svc.label(), f"Points: {points_text}")
+                    return value, f"✅ {_tg_service_label(svc)} | Points: {points_text}"
+                except Exception as exc:
+                    detail = exception_summary(exc)
+                    error(svc.label(), detail)
+                    return Decimal(0), f"❌ {_tg_service_label(svc)} | {detail}"
+
+            results = await asyncio.gather(*(read_points(svc) for svc in services))
+            total = sum((value for value, _ in results), Decimal(0))
+            total_text = fmt_points(total)
+            ok("Всего", f"Points: {total_text}")
+            lines = [f"⭐ POINTS | {len(services)} кошельков", ""]
+            lines.extend(line for _, line in results)
+            lines.extend(["", f"Всего Points: {total_text}"])
+            await send_tg("\n".join(lines))
+        finally:
+            await asyncio.gather(
+                *(svc.close() for svc in services),
+                return_exceptions=True,
+            )
 
     async def withdraw_to_wallets(self, method: str) -> None:
         if method not in {"fast", "secure"}:

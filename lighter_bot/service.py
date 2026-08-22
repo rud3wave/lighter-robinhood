@@ -62,6 +62,32 @@ class LighterService:
     def available_balance(self) -> Decimal:
         return Decimal(str(self.account_state().get("available_balance", "0")))
 
+    async def points(self) -> Decimal:
+        if not self.wallet.can_trade or self.client is None:
+            raise RuntimeError("торговый доступ не настроен")
+
+        auth, err = self.client.create_auth_token_with_expiry(
+            api_key_index=self.wallet.api_key_index
+        )
+        if err:
+            raise RuntimeError(f"не удалось получить Points: {err}")
+        try:
+            payload = await asyncio.to_thread(
+                self.public._get,
+                "/api/v1/livePoints/total",
+                account_index=self.wallet.account_index,
+                auth=auth,
+            )
+        except Exception as exc:
+            raise RuntimeError("не удалось получить Points") from exc
+
+        if int(payload.get("code", 200)) != 200:
+            raise RuntimeError(str(payload.get("message") or "не удалось получить Points"))
+        value = payload.get("total_live_points")
+        if value is None:
+            raise RuntimeError("Lighter не вернул Points")
+        return Decimal(str(value))
+
     def position(self, symbol: str) -> dict | None:
         for pos in self.account_state().get("positions", []):
             if str(pos.get("symbol", "")).upper() == symbol.upper() and Decimal(str(pos.get("position", "0"))) != 0:
